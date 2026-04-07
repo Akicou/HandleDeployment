@@ -112,7 +112,7 @@ function errorMessage(error: unknown): string {
 
 function decorateRailwayAuthError(message: string): string {
   if (message === 'Not Authorized') {
-    return `${message}. Check the Railway API token and make sure "service id" is the real Railway service ID, not the visible service name.`;
+    return `${message}. Check the Railway API token for that project in settings.`;
   }
   return message;
 }
@@ -1535,7 +1535,8 @@ async function handleRequest(req: Request): Promise<Response> {
           </div>
           <div class="form-group">
             <label>project id <span>*</span></label>
-            <input type="text" name="projectId" required placeholder="proj_xxx">
+            <input type="text" id="projectInput" name="projectId" list="projectOptions" required placeholder="select saved project or paste project id">
+            <datalist id="projectOptions"></datalist>
           </div>
           <div class="form-group">
             <label>service <span>*</span></label>
@@ -1641,6 +1642,7 @@ async function handleRequest(req: Request): Promise<Response> {
     let currentUser = null;
     let allRepos = [];
     let projectServicesTimer = null;
+    let savedProjectIds = [];
 
     async function loadUser() {
       const res = await fetch('/api/user');
@@ -1701,6 +1703,19 @@ async function handleRequest(req: Request): Promise<Response> {
       allRepos = await res.json();
     }
 
+    function setProjectOptions(tokens) {
+      const projectOptions = document.getElementById('projectOptions');
+      savedProjectIds = [...new Set(tokens.map(token => token.projectId).filter(Boolean))];
+      projectOptions.innerHTML = savedProjectIds
+        .map(projectId => \`<option value="\${projectId}"></option>\`)
+        .join('');
+
+      const projectInput = document.getElementById('projectInput');
+      if (!projectInput.value && savedProjectIds.length === 1) {
+        projectInput.value = savedProjectIds[0];
+      }
+    }
+
     function setServiceOptions(services) {
       const serviceSelect = document.getElementById('serviceSelect');
       if (!services.length) {
@@ -1716,7 +1731,8 @@ async function handleRequest(req: Request): Promise<Response> {
       serviceSelect.value = services[0].id;
     }
 
-    async function fetchProjectServices(projectId) {
+    async function fetchProjectServices(projectId, options = {}) {
+      const { silent = false } = options;
       const serviceSelect = document.getElementById('serviceSelect');
       if (!projectId) {
         serviceSelect.innerHTML = '<option value="">-- enter project id first --</option>';
@@ -1727,9 +1743,11 @@ async function handleRequest(req: Request): Promise<Response> {
       const res = await fetch('/api/project-services?projectId=' + encodeURIComponent(projectId));
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: 'failed to load services' }));
-        serviceSelect.innerHTML = '<option value="">-- unable to load services --</option>';
+        serviceSelect.innerHTML = \`<option value="">-- \${data.error || 'unable to load services'} --</option>\`;
         serviceSelect.disabled = true;
-        showToast(data.error || 'failed to load services', true);
+        if (!silent) {
+          showToast(data.error || 'failed to load services', true);
+        }
         return;
       }
 
@@ -1738,18 +1756,18 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     function setupProjectSelector() {
-      const projectInput = document.querySelector('input[name="projectId"]');
+      const projectInput = document.getElementById('projectInput');
       projectInput.addEventListener('input', (e) => {
         clearTimeout(projectServicesTimer);
         const projectId = e.target.value.trim();
         projectServicesTimer = setTimeout(() => {
-          fetchProjectServices(projectId);
+          fetchProjectServices(projectId, { silent: true });
         }, 300);
       });
 
       const initialProjectId = projectInput.value.trim();
       if (initialProjectId) {
-        fetchProjectServices(initialProjectId);
+        fetchProjectServices(initialProjectId, { silent: true });
       }
     }
 
@@ -1872,6 +1890,7 @@ async function handleRequest(req: Request): Promise<Response> {
       const res = await fetch('/api/tokens');
       const tokens = await res.json();
       const list = document.getElementById('tokenList');
+      setProjectOptions(tokens);
       if (!tokens.length) { list.innerHTML = ''; return; }
       list.innerHTML = '<div class="section-title">saved</div>' + tokens.map(t => \`
         <div class="token-item">
@@ -1980,8 +1999,8 @@ async function handleRequest(req: Request): Promise<Response> {
         showToast('saved');
         f.reset();
         loadTokens();
-        const currentProjectId = document.querySelector('input[name="projectId"]').value.trim();
-        if (currentProjectId) fetchProjectServices(currentProjectId);
+        const currentProjectId = document.getElementById('projectInput').value.trim();
+        if (currentProjectId) fetchProjectServices(currentProjectId, { silent: true });
       }
     });
 
