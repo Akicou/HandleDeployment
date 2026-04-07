@@ -5,6 +5,15 @@ interface RailwayResponse<T> {
   errors?: Array<{ message: string }>;
 }
 
+function railwayErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRailwayAuthError(error: unknown): boolean {
+  const message = railwayErrorMessage(error);
+  return message === 'Not Authorized' || message.toLowerCase().includes('unauthorized');
+}
+
 interface ServiceRecord {
   id: string;
   name: string;
@@ -89,8 +98,7 @@ export class RailwayClient {
   }
 
   private isAuthError(error: unknown): boolean {
-    return error instanceof Error
-      && (error.message === 'Not Authorized' || error.message.toLowerCase().includes('unauthorized'));
+    return isRailwayAuthError(error);
   }
 
   private async query<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
@@ -412,13 +420,33 @@ export class RailwayClient {
 
 export async function deployToRailway(token: string, config: DeploymentConfig): Promise<string> {
   const client = new RailwayClient(token);
+  let repoConnectFailedWithAuth = false;
 
   if (config.repo && config.branch) {
-    await client.connectService(config.serviceId, config.repo, config.branch);
+    try {
+      await client.connectService(config.serviceId, config.repo, config.branch);
+    } catch (error) {
+      if (!isRailwayAuthError(error)) {
+        throw error;
+      }
+
+      repoConnectFailedWithAuth = true;
+    }
   }
 
   const environmentId = config.environmentId || 'production';
-  return client.deployService(config.serviceId, environmentId);
+  try {
+    return await client.deployService(config.serviceId, environmentId);
+  } catch (error) {
+    if (repoConnectFailedWithAuth && railwayErrorMessage(error) === 'Deployment not found') {
+      throw new Error(
+        'This Railway token can read the project, but Railway rejected connecting the GitHub repo for this service. ' +
+        'Use a Railway account/workspace token for first-time repo connection, or connect the repo in Railway first and then retry.'
+      );
+    }
+
+    throw error;
+  }
 }
 
 export async function redeployToRailway(token: string, serviceId: string, environmentId?: string): Promise<string> {
