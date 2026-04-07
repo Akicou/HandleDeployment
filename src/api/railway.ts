@@ -13,6 +13,11 @@ interface ServiceRecord {
   projectId: string;
 }
 
+export interface ProjectServiceRecord {
+  id: string;
+  name: string;
+}
+
 export interface DeploymentConfig {
   name: string;
   projectId: string;
@@ -62,6 +67,25 @@ export class RailwayClient {
     `;
     const result = await this.query<{ service: ServiceRecord }>(query, { id: serviceId });
     return result.service;
+  }
+
+  async getProjectServices(projectId: string): Promise<ProjectServiceRecord[]> {
+    const query = `
+      query project($id: String!) {
+        project(id: $id) {
+          id
+          services {
+            id
+            name
+          }
+        }
+      }
+    `;
+    const result = await this.query<{ project: { services: ProjectServiceRecord[] } | null }>(query, { id: projectId });
+    if (!result.project) {
+      throw new Error(`Project ${projectId} not found`);
+    }
+    return result.project.services;
   }
 
   async getServiceInstance(serviceId: string, environmentId: string): Promise<unknown> {

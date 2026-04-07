@@ -1,5 +1,5 @@
 import { db, schema } from './db';
-import { addCustomDomain, changeBranch, deployToRailway, redeployToRailway } from './api/railway';
+import { addCustomDomain, changeBranch, deployToRailway, RailwayClient, redeployToRailway } from './api/railway';
 import {
   exchangeCodeForToken,
   findOrCreateUser,
@@ -110,6 +110,13 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function decorateRailwayAuthError(message: string): string {
+  if (message === 'Not Authorized') {
+    return `${message}. Check the Railway API token and make sure "service id" is the real Railway service ID, not the visible service name.`;
+  }
+  return message;
+}
+
 function toPublicUser(user: User): PublicUser {
   const { githubAccessToken: _token, ...publicUser } = user;
   return publicUser;
@@ -134,11 +141,48 @@ async function getRailwayTokenForUser(userId: string, projectId?: string): Promi
     .from(schema.railwayTokens)
     .where(eq(schema.railwayTokens.userId, userId));
 
-  const matchingToken = tokens.find(candidate => candidate.projectId && candidate.projectId === projectId)
-    || tokens.find(candidate => candidate.isDefault)
-    || tokens[0];
+  const orderedTokens = [...tokens].sort(
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+  );
+
+  const matchingToken = orderedTokens.find(candidate => candidate.projectId && candidate.projectId === projectId)
+    || orderedTokens.find(candidate => candidate.isDefault)
+    || orderedTokens[0];
 
   return matchingToken?.token || null;
+}
+
+async function getProjectServicesForUser(userId: string, projectId: string): Promise<Array<{ id: string; name: string }>> {
+  const railwayToken = await getRailwayTokenForUser(userId, projectId);
+  if (!railwayToken) {
+    throw new Error('No Railway token configured for this project');
+  }
+
+  const client = new RailwayClient(railwayToken);
+  return client.getProjectServices(projectId);
+}
+
+async function resolveServiceIdForProject(
+  userId: string,
+  projectId: string,
+  serviceIdentifier: string
+): Promise<{ serviceId: string; serviceName: string }> {
+  const services = await getProjectServicesForUser(userId, projectId);
+  const normalizedInput = serviceIdentifier.trim().toLowerCase();
+  const matchingService = services.find((candidate) =>
+    candidate.id.toLowerCase() === normalizedInput || candidate.name.toLowerCase() === normalizedInput
+  );
+
+  if (!matchingService) {
+    throw new Error(
+      `Service "${serviceIdentifier}" was not found in project ${projectId}. Choose one from the service list.`
+    );
+  }
+
+  return {
+    serviceId: matchingService.id,
+    serviceName: matchingService.name,
+  };
 }
 
 async function resolveReleaseSelection(
@@ -437,6 +481,15 @@ async function handleRequest(req: Request): Promise<Response> {
       return jsonResponse({ error: 'No Railway token configured' }, { status: 400 });
     }
 
+    let resolvedService: { serviceId: string; serviceName: string };
+    try {
+      resolvedService = await resolveServiceIdForProject(sessionUser.id, projectId, serviceId);
+    } catch (error) {
+      const message = decorateRailwayAuthError(errorMessage(error));
+      const status = message.includes('Not Authorized') ? 502 : 400;
+      return jsonResponse({ error: message }, { status });
+    }
+
     let releaseResolution: ReleaseResolution;
     try {
       releaseResolution = await resolveReleaseSelection(session.githubToken, repo, releaseTag);
@@ -452,7 +505,7 @@ async function handleRequest(req: Request): Promise<Response> {
         userId: sessionUser.id,
         name,
         projectId,
-        serviceId,
+        serviceId: resolvedService.serviceId,
         environmentId: environmentId || 'production',
         releaseTag: releaseResolution.selectedRelease.tag_name,
         repo,
@@ -468,7 +521,7 @@ async function handleRequest(req: Request): Promise<Response> {
       const deploymentId = await deployToRailway(railwayToken, {
         name,
         projectId,
-        serviceId,
+        serviceId: resolvedService.serviceId,
         environmentId,
         repo,
         branch: releaseResolution.repo.default_branch,
@@ -492,7 +545,10 @@ async function handleRequest(req: Request): Promise<Response> {
         .set({ status: 'failed', updatedAt: new Date() })
         .where(eq(schema.deployments.id, deployment.id));
 
-      return jsonResponse({ error: `Deployment failed: ${errorMessage(error)}` }, { status: 500 });
+      return jsonResponse(
+        { error: `Deployment failed: ${decorateRailwayAuthError(errorMessage(error))}` },
+        { status: 500 }
+      );
     }
   }
 
@@ -560,7 +616,10 @@ async function handleRequest(req: Request): Promise<Response> {
         .set({ status: 'failed', updatedAt: new Date() })
         .where(eq(schema.deployments.id, deploymentId));
 
-      return jsonResponse({ error: `Redeploy failed: ${errorMessage(error)}` }, { status: 500 });
+      return jsonResponse(
+        { error: `Redeploy failed: ${decorateRailwayAuthError(errorMessage(error))}` },
+        { status: 500 }
+      );
     }
   }
 
@@ -624,14 +683,38 @@ async function handleRequest(req: Request): Promise<Response> {
         .where(eq(schema.railwayTokens.userId, session.userId));
     }
 
-    await db
-      .insert(schema.railwayTokens)
-      .values({
-        userId: session.userId,
-        token,
-        projectId,
-        isDefault: Boolean(isDefault),
-      });
+    const existingTokens = await db
+      .select()
+      .from(schema.railwayTokens)
+      .where(eq(schema.railwayTokens.userId, session.userId));
+
+    const orderedTokens = [...existingTokens].sort(
+      (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+    );
+
+    const existingToken = projectId
+      ? orderedTokens.find(candidate => candidate.projectId === projectId)
+      : (isDefault ? orderedTokens.find(candidate => candidate.isDefault) : undefined);
+
+    if (existingToken) {
+      await db
+        .update(schema.railwayTokens)
+        .set({
+          token,
+          projectId,
+          isDefault: Boolean(isDefault),
+        })
+        .where(eq(schema.railwayTokens.id, existingToken.id));
+    } else {
+      await db
+        .insert(schema.railwayTokens)
+        .values({
+          userId: session.userId,
+          token,
+          projectId,
+          isDefault: Boolean(isDefault),
+        });
+    }
 
     return jsonResponse({ success: true });
   }
@@ -686,6 +769,30 @@ async function handleRequest(req: Request): Promise<Response> {
       return jsonResponse(repos);
     } catch (error) {
       return jsonResponse({ error: `Failed to fetch repositories: ${errorMessage(error)}` }, { status: 502 });
+    }
+  }
+
+  if (path === '/api/project-services' && method === 'GET') {
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (!isUserAuthorized(sessionUser)) {
+      return jsonResponse({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    const projectId = url.searchParams.get('projectId');
+    if (!projectId) {
+      return jsonResponse({ error: 'Missing projectId parameter' }, { status: 400 });
+    }
+
+    try {
+      const services = await getProjectServicesForUser(sessionUser.id, projectId);
+      return jsonResponse(services);
+    } catch (error) {
+      const message = decorateRailwayAuthError(errorMessage(error));
+      const status = message.includes('Not Authorized') ? 502 : 400;
+      return jsonResponse({ error: message }, { status });
     }
   }
 
@@ -1318,8 +1425,10 @@ async function handleRequest(req: Request): Promise<Response> {
             <input type="text" name="projectId" required placeholder="proj_xxx">
           </div>
           <div class="form-group">
-            <label>service id <span>*</span></label>
-            <input type="text" name="serviceId" required placeholder="svc_xxx">
+            <label>service <span>*</span></label>
+            <select id="serviceSelect" name="serviceId" required disabled>
+              <option value="">-- enter project id first --</option>
+            </select>
           </div>
           <div class="form-group">
             <label>environment</label>
@@ -1418,6 +1527,7 @@ async function handleRequest(req: Request): Promise<Response> {
   <script>
     let currentUser = null;
     let allRepos = [];
+    let projectServicesTimer = null;
 
     async function loadUser() {
       const res = await fetch('/api/user');
@@ -1476,6 +1586,58 @@ async function handleRequest(req: Request): Promise<Response> {
       const res = await fetch('/api/repos');
       if (!res.ok) return;
       allRepos = await res.json();
+    }
+
+    function setServiceOptions(services) {
+      const serviceSelect = document.getElementById('serviceSelect');
+      if (!services.length) {
+        serviceSelect.innerHTML = '<option value="">-- no services found --</option>';
+        serviceSelect.disabled = true;
+        return;
+      }
+
+      serviceSelect.innerHTML = services.map(service =>
+        \`<option value="\${service.id}">\${service.name} (\${service.id})</option>\`
+      ).join('');
+      serviceSelect.disabled = false;
+      serviceSelect.value = services[0].id;
+    }
+
+    async function fetchProjectServices(projectId) {
+      const serviceSelect = document.getElementById('serviceSelect');
+      if (!projectId) {
+        serviceSelect.innerHTML = '<option value="">-- enter project id first --</option>';
+        serviceSelect.disabled = true;
+        return;
+      }
+
+      const res = await fetch('/api/project-services?projectId=' + encodeURIComponent(projectId));
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: 'failed to load services' }));
+        serviceSelect.innerHTML = '<option value="">-- unable to load services --</option>';
+        serviceSelect.disabled = true;
+        showToast(data.error || 'failed to load services', true);
+        return;
+      }
+
+      const services = await res.json();
+      setServiceOptions(services);
+    }
+
+    function setupProjectSelector() {
+      const projectInput = document.querySelector('input[name="projectId"]');
+      projectInput.addEventListener('input', (e) => {
+        clearTimeout(projectServicesTimer);
+        const projectId = e.target.value.trim();
+        projectServicesTimer = setTimeout(() => {
+          fetchProjectServices(projectId);
+        }, 300);
+      });
+
+      const initialProjectId = projectInput.value.trim();
+      if (initialProjectId) {
+        fetchProjectServices(initialProjectId);
+      }
     }
 
     function setupRepoSelector() {
@@ -1672,6 +1834,8 @@ async function handleRequest(req: Request): Promise<Response> {
       if (res.ok) {
         showToast('deploying');
         f.reset();
+        document.getElementById('serviceSelect').innerHTML = '<option value="">-- enter project id first --</option>';
+        document.getElementById('serviceSelect').disabled = true;
         document.getElementById('releaseSelect').disabled = true;
         loadDeployments();
       }
@@ -1686,7 +1850,13 @@ async function handleRequest(req: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: f.token.value, projectId: f.projectId.value, isDefault: true })
       });
-      if (res.ok) { showToast('saved'); f.reset(); loadTokens(); }
+      if (res.ok) {
+        showToast('saved');
+        f.reset();
+        loadTokens();
+        const currentProjectId = document.querySelector('input[name="projectId"]').value.trim();
+        if (currentProjectId) fetchProjectServices(currentProjectId);
+      }
     });
 
     document.getElementById('domainForm').addEventListener('submit', submitDomain);
@@ -1712,6 +1882,7 @@ async function handleRequest(req: Request): Promise<Response> {
       loadDeployments();
       loadRepos();
       loadTokens();
+      setupProjectSelector();
       setupRepoSelector();
     });
   </script>
