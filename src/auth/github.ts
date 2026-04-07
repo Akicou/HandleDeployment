@@ -91,7 +91,7 @@ export async function findOrCreateUser(accessToken: string): Promise<User> {
   if (existingUser) {
     await db
       .update(schema.users)
-      .({ 
+      .set({
         username: githubUser.login,
         email,
         avatarUrl: githubUser.avatar_url,
