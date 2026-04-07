@@ -425,8 +425,8 @@ async function handleRequest(req: Request): Promise<Response> {
     return new Response('', {
       status: 302,
       headers: {
-        'Location': '/',
-        'Set-Cookie': 'session=; Path=/; Max-Age=0',
+        'Location': '/auth/login',
+        'Set-Cookie': 'session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT',
       },
     });
   }
@@ -740,6 +740,49 @@ async function handleRequest(req: Request): Promise<Response> {
     return jsonResponse(maskedTokens);
   }
 
+  if (path.startsWith('/api/tokens/') && method === 'DELETE') {
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const tokenId = path.split('/')[3];
+    if (!tokenId) {
+      return jsonResponse({ error: 'Missing token ID' }, { status: 400 });
+    }
+
+    const tokenRecord = await db
+      .select()
+      .from(schema.railwayTokens)
+      .where(eq(schema.railwayTokens.id, tokenId))
+      .then(rows => rows[0]);
+
+    if (!tokenRecord || tokenRecord.userId !== session.userId) {
+      return jsonResponse({ error: 'Token not found' }, { status: 404 });
+    }
+
+    await db.delete(schema.railwayTokens).where(eq(schema.railwayTokens.id, tokenId));
+
+    if (tokenRecord.isDefault) {
+      const remainingTokens = await db
+        .select()
+        .from(schema.railwayTokens)
+        .where(eq(schema.railwayTokens.userId, session.userId));
+
+      const nextDefault = [...remainingTokens].sort(
+        (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+      )[0];
+
+      if (nextDefault) {
+        await db
+          .update(schema.railwayTokens)
+          .set({ isDefault: true })
+          .where(eq(schema.railwayTokens.id, nextDefault.id));
+      }
+    }
+
+    return jsonResponse({ success: true });
+  }
+
   if (path === '/api/releases' && method === 'GET') {
     if (!session || !sessionUser) {
       return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
@@ -931,6 +974,15 @@ async function handleRequest(req: Request): Promise<Response> {
     } catch (error) {
       return jsonResponse({ error: `Failed to add domain: ${errorMessage(error)}` }, { status: 500 });
     }
+  }
+
+  if (!session || !sessionUser) {
+    return new Response('', {
+      status: 302,
+      headers: {
+        Location: '/auth/login',
+      },
+    });
   }
 
   const html = `<!DOCTYPE html>
@@ -1763,9 +1815,22 @@ async function handleRequest(req: Request): Promise<Response> {
       list.innerHTML = '<div class="section-title">saved</div>' + tokens.map(t => \`
         <div class="token-item">
           <span class="token-mask">\${t.token}</span>
+          <button class="btn-danger" onclick="deleteToken('\${t.id}')">delete</button>
           <span style="color:var(--text-muted);font-size:10px;">\${t.projectId || '—'}\${t.isDefault ? ' • default' : ''}</span>
         </div>
       \`).join('');
+    }
+
+    async function deleteToken(id) {
+      if (!confirm('delete saved token?')) return;
+      const res = await fetch('/api/tokens/' + id, { method: 'DELETE' });
+      if (res.ok) {
+        showToast('deleted');
+        loadTokens();
+      } else {
+        const data = await res.json();
+        showToast(data.error || 'error', true);
+      }
     }
 
     function openDomainModal(id, existing) {
