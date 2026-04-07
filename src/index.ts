@@ -698,331 +698,214 @@ async function handleRequest(req: Request): Promise<Response> {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Railway Deployer</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
-    :root {
-      --bg-primary: #0a0a0f;
-      --bg-secondary: #12121a;
-      --bg-card: #1a1a24;
-      --bg-card-hover: #22222e;
-      --border: #2a2a3a;
-      --border-hover: #3a3a4f;
-      --text-primary: #f0f0f5;
-      --text-secondary: #8888a0;
-      --text-muted: #555566;
-      --accent: #7c3aed;
-      --accent-hover: #8b5cf6;
-      --accent-glow: rgba(124, 58, 237, 0.4);
-      --success: #10b981;
-      --success-glow: rgba(16, 185, 129, 0.3);
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      --info: #3b82f6;
-    }
-
     * { box-sizing: border-box; margin: 0; padding: 0; }
     
+    :root {
+      --bg: #fafafa;
+      --bg-card: #ffffff;
+      --bg-hover: #f5f5f5;
+      --border: #e0e0e0;
+      --text: #0a0a0a;
+      --text-muted: #666666;
+      --accent: #0a0a0a;
+      --success: #16a34a;
+      --warning: #ca8a04;
+      --danger: #dc2626;
+    }
+
     body {
-      font-family: 'DM Sans', sans-serif;
-      background: var(--bg-primary);
-      color: var(--text-primary);
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
-      line-height: 1.6;
+      font-size: 14px;
+      line-height: 1.5;
     }
 
-    h1, h2, h3, h4 { font-family: 'Outfit', sans-serif; }
-
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-track { background: var(--bg-secondary); }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
-
-    .app-container {
-      max-width: 1200px;
+    .container {
+      max-width: 960px;
       margin: 0 auto;
-      padding: 2rem;
-      animation: fadeIn 0.6s ease-out;
+      padding: 48px 24px;
     }
 
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(10px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    @keyframes pulse-glow {
-      0%, 100% { box-shadow: 0 0 20px var(--accent-glow); }
-      50% { box-shadow: 0 0 40px var(--accent-glow); }
-    }
-
-    @keyframes slide-up {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .header {
+    header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 3rem;
-      padding-bottom: 1.5rem;
+      padding-bottom: 32px;
+      margin-bottom: 48px;
       border-bottom: 1px solid var(--border);
-      animation: slide-up 0.5s ease-out;
     }
 
     .logo {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+    }
+
+    .logo span {
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    .user {
       display: flex;
       align-items: center;
-      gap: 1rem;
+      gap: 12px;
     }
 
-    .logo-icon {
-      width: 48px;
-      height: 48px;
-      background: linear-gradient(135deg, var(--accent), #a855f7);
-      border-radius: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 24px;
-      animation: pulse-glow 3s infinite;
-    }
-
-    .logo-text h1 {
-      font-size: 1.75rem;
-      font-weight: 700;
-      background: linear-gradient(135deg, var(--text-primary), var(--accent-hover));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-
-    .logo-text p {
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-    }
-
-    .user-nav {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-
-    .user-info {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.5rem 1rem;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 50px;
-    }
-
-    .user-avatar {
-      width: 32px;
-      height: 32px;
+    .user img {
+      width: 28px;
+      height: 28px;
       border-radius: 50%;
-      border: 2px solid var(--accent);
+      border: 1px solid var(--border);
     }
 
     .user-name {
-      font-weight: 500;
-      font-size: 0.9rem;
+      font-size: 13px;
+      color: var(--text-muted);
     }
 
-    .logout-btn {
+    .nav {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 32px;
+    }
+
+    .nav button {
+      padding: 8px 16px;
       background: transparent;
       border: 1px solid var(--border);
-      color: var(--text-secondary);
-      padding: 0.5rem 1rem;
-      border-radius: 50px;
-      cursor: pointer;
-      font-size: 0.85rem;
-      transition: all 0.3s ease;
       font-family: inherit;
-    }
-
-    .logout-btn:hover {
-      border-color: var(--danger);
-      color: var(--danger);
-      background: rgba(239, 68, 68, 0.1);
-    }
-
-    .tabs {
-      display: flex;
-      gap: 0.5rem;
-      margin-bottom: 2rem;
-      animation: slide-up 0.5s ease-out 0.1s both;
-    }
-
-    .tab {
-      padding: 0.75rem 1.5rem;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      color: var(--text-secondary);
+      font-size: 12px;
       cursor: pointer;
-      font-size: 0.9rem;
-      font-weight: 500;
-      transition: all 0.3s ease;
-      font-family: inherit;
+      transition: all 0.15s;
     }
 
-    .tab:hover {
-      border-color: var(--border-hover);
-      color: var(--text-primary);
+    .nav button:first-child {
+      border-radius: 4px 0 0 4px;
     }
 
-    .tab.active {
+    .nav button:last-child {
+      border-radius: 0 4px 4px 0;
+    }
+
+    .nav button.active {
       background: var(--accent);
-      border-color: var(--accent);
       color: white;
-      box-shadow: 0 4px 20px var(--accent-glow);
+      border-color: var(--accent);
     }
 
     .card {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 2rem;
-      margin-bottom: 1.5rem;
-      transition: all 0.3s ease;
-      animation: slide-up 0.5s ease-out 0.2s both;
-    }
-
-    .card:hover {
-      border-color: var(--border-hover);
-      transform: translateY(-2px);
+      padding: 24px;
+      margin-bottom: 16px;
     }
 
     .card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1.5rem;
-    }
-
-    .card-title {
-      font-size: 1.25rem;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-
-    .card-title-icon {
-      width: 36px;
-      height: 36px;
-      background: linear-gradient(135deg, var(--accent), #a855f7);
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 20px;
     }
 
     .form-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1.25rem;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
     }
 
     .form-group {
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
+      gap: 6px;
     }
 
-    .form-group.full-width {
+    .form-group.full {
       grid-column: 1 / -1;
     }
 
     label {
-      font-size: 0.85rem;
-      font-weight: 500;
-      color: var(--text-secondary);
+      font-size: 11px;
+      color: var(--text-muted);
     }
 
-    label span.required {
+    label span {
       color: var(--danger);
     }
 
     input, select {
-      background: var(--bg-secondary);
+      padding: 10px 12px;
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 0.875rem 1rem;
-      color: var(--text-primary);
-      font-size: 0.95rem;
       font-family: inherit;
-      transition: all 0.3s ease;
+      font-size: 13px;
+      background: var(--bg);
       outline: none;
+      transition: border-color 0.15s;
     }
 
     input:focus, select:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-glow);
     }
 
     input::placeholder {
-      color: var(--text-muted);
+      color: #999;
     }
 
     select {
       cursor: pointer;
       appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%238888a0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
-      background-position: right 0.75rem center;
-      background-size: 18px;
-      padding-right: 2.5rem;
+      background-position: right 10px center;
+      padding-right: 32px;
     }
 
     select:disabled {
-      opacity: 0.5;
+      opacity: 0.4;
       cursor: not-allowed;
     }
 
-    .btn {
-      padding: 0.875rem 1.75rem;
-      border-radius: 12px;
-      font-size: 0.95rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.3s ease;
-      border: none;
+    button {
       font-family: inherit;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
+      cursor: pointer;
+      transition: all 0.15s;
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent), #a855f7);
+      padding: 10px 20px;
+      background: var(--accent);
       color: white;
-      box-shadow: 0 4px 20px var(--accent-glow);
+      border: 1px solid var(--accent);
+      font-size: 12px;
+      font-weight: 500;
     }
 
     .btn-primary:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 30px var(--accent-glow);
+      background: #333;
     }
 
     .btn-secondary {
-      background: var(--bg-secondary);
+      padding: 8px 14px;
+      background: transparent;
       border: 1px solid var(--border);
-      color: var(--text-primary);
+      font-size: 11px;
     }
 
     .btn-secondary:hover {
-      border-color: var(--accent);
-      color: var(--accent);
+      background: var(--bg-hover);
     }
 
     .btn-danger {
-      background: rgba(239, 68, 68, 0.1);
+      padding: 8px 14px;
+      background: transparent;
       border: 1px solid var(--danger);
       color: var(--danger);
+      font-size: 11px;
     }
 
     .btn-danger:hover {
@@ -1030,133 +913,68 @@ async function handleRequest(req: Request): Promise<Response> {
       color: white;
     }
 
-    .btn-success {
-      background: linear-gradient(135deg, var(--success), #059669);
-      color: white;
-      box-shadow: 0 4px 20px var(--success-glow);
-    }
-
-    .btn-success:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 30px var(--success-glow);
-    }
-
-    .btn-sm {
-      padding: 0.5rem 1rem;
-      font-size: 0.85rem;
-    }
-
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      padding: 0.4rem 0.85rem;
-      border-radius: 50px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      text-transform: capitalize;
-    }
-
-    .status-pending {
-      background: rgba(245, 158, 11, 0.15);
-      color: var(--warning);
-      border: 1px solid rgba(245, 158, 11, 0.3);
-    }
-
-    .status-deploying {
-      background: rgba(59, 130, 246, 0.15);
-      color: var(--info);
-      border: 1px solid rgba(59, 130, 246, 0.3);
-    }
-
-    .status-deployed {
-      background: rgba(16, 185, 129, 0.15);
-      color: var(--success);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-    }
-
-    .status-failed {
-      background: rgba(239, 68, 68, 0.15);
-      color: var(--danger);
-      border: 1px solid rgba(239, 68, 68, 0.3);
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: currentColor;
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
-    .deployments-list {
+    .deploy-list {
       display: flex;
       flex-direction: column;
-      gap: 1rem;
     }
 
-    .deployment-item {
+    .deploy-item {
       display: grid;
       grid-template-columns: 1fr auto auto auto;
+      gap: 16px;
       align-items: center;
-      gap: 1.5rem;
-      padding: 1.25rem;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      transition: all 0.3s ease;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--border);
     }
 
-    .deployment-item:hover {
-      border-color: var(--border-hover);
-      background: var(--bg-card-hover);
+    .deploy-item:last-child {
+      border-bottom: none;
     }
 
-    .deployment-info h4 {
-      font-size: 1.1rem;
-      font-weight: 600;
-      margin-bottom: 0.25rem;
+    .deploy-name {
+      font-weight: 500;
+      font-size: 13px;
     }
 
-    .deployment-meta {
-      display: flex;
-      gap: 1rem;
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-    }
-
-    .deployment-meta span {
-      display: flex;
-      align-items: center;
-      gap: 0.35rem;
-    }
-
-    .deployment-actions {
-      display: flex;
-      gap: 0.5rem;
-    }
-
-    .empty-state {
-      text-align: center;
-      padding: 4rem 2rem;
+    .deploy-meta {
+      font-size: 11px;
       color: var(--text-muted);
+      margin-top: 2px;
     }
 
-    .empty-state-icon {
-      font-size: 4rem;
-      margin-bottom: 1rem;
-      opacity: 0.5;
+    .deploy-meta span {
+      margin-right: 12px;
     }
 
-    .empty-state h3 {
-      font-size: 1.25rem;
-      margin-bottom: 0.5rem;
-      color: var(--text-secondary);
+    .status {
+      font-size: 10px;
+      padding: 4px 8px;
+      border: 1px solid;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .status.deployed { color: var(--success); border-color: var(--success); }
+    .status.failed { color: var(--danger); border-color: var(--danger); }
+    .status.deploying { color: var(--warning); border-color: var(--warning); }
+    .status.pending { color: var(--text-muted); border-color: var(--border); }
+
+    .actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .empty {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .empty-icon {
+      font-size: 24px;
+      margin-bottom: 8px;
+      opacity: 0.3;
     }
 
     .repo-selector {
@@ -1170,304 +988,255 @@ async function handleRequest(req: Request): Promise<Response> {
       right: 0;
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      margin-top: 0.5rem;
-      max-height: 300px;
+      margin-top: 4px;
+      max-height: 200px;
       overflow-y: auto;
       z-index: 100;
       display: none;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
     }
 
     .repo-dropdown.active {
       display: block;
     }
 
-    .repo-dropdown-item {
-      padding: 0.875rem 1rem;
+    .repo-item {
+      padding: 10px 12px;
       cursor: pointer;
       border-bottom: 1px solid var(--border);
-      transition: background 0.2s;
+      font-size: 12px;
     }
 
-    .repo-dropdown-item:last-child {
+    .repo-item:last-child {
       border-bottom: none;
     }
 
-    .repo-dropdown-item:hover {
-      background: var(--bg-card-hover);
+    .repo-item:hover {
+      background: var(--bg-hover);
     }
 
-    .repo-dropdown-item.private {
-      border-left: 3px solid var(--warning);
+    .repo-item.private {
+      border-left: 2px solid var(--warning);
     }
 
-    .repo-dropdown-item .repo-name {
-      font-weight: 600;
-      margin-bottom: 0.25rem;
-    }
-
-    .repo-dropdown-item .repo-desc {
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .collaborators-list {
+    .collab-list {
       display: flex;
       flex-direction: column;
-      gap: 0.75rem;
+      gap: 8px;
     }
 
-    .collaborator-item {
+    .collab-item {
       display: flex;
-      align-items: center;
       justify-content: space-between;
-      padding: 1rem;
-      background: var(--bg-secondary);
+      align-items: center;
+      padding: 12px;
+      background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 12px;
     }
 
-    .collaborator-info {
+    .collab-info {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
+      gap: 10px;
     }
 
-    .collaborator-avatar {
-      width: 40px;
-      height: 40px;
+    .collab-info img {
+      width: 24px;
+      height: 24px;
       border-radius: 50%;
     }
 
-    .collaborator-name {
-      font-weight: 600;
+    .collab-name {
+      font-size: 12px;
+      font-weight: 500;
     }
 
-    .collaborator-role {
-      font-size: 0.8rem;
+    .collab-role {
+      font-size: 10px;
       color: var(--text-muted);
     }
 
-    .collaborator-role.owner {
+    .collab-role.owner {
       color: var(--accent);
     }
 
-    .invite-form {
+    .invite-row {
       display: flex;
-      gap: 0.75rem;
-      margin-top: 1rem;
+      gap: 8px;
+      margin-top: 16px;
     }
 
-    .invite-form input {
-      flex: 1;
-    }
-
-    .domain-section {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      padding: 1rem;
-      background: var(--bg-secondary);
-      border-radius: 12px;
-      margin-top: 1rem;
-    }
-
-    .domain-section input {
+    .invite-row input {
       flex: 1;
     }
 
     .toast {
       position: fixed;
-      bottom: 2rem;
-      right: 2rem;
-      padding: 1rem 1.5rem;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-      animation: slide-up 0.3s ease-out;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 16px;
+      background: var(--accent);
+      color: white;
+      font-size: 12px;
       z-index: 1000;
     }
 
-    .toast.success {
-      border-color: var(--success);
-    }
-
     .toast.error {
-      border-color: var(--danger);
+      background: var(--danger);
     }
 
-    .hidden { display: none !important; }
+    .hidden {
+      display: none !important;
+    }
+
+    .section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .token-list {
+      margin-top: 16px;
+    }
+
+    .token-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+
+    .token-mask {
+      font-family: monospace;
+      color: var(--text-muted);
+    }
   </style>
 </head>
 <body>
-  <div class="app-container">
-    <header class="header">
-      <div class="logo">
-        <div class="logo-icon">🚀</div>
-        <div class="logo-text">
-          <h1>Railway Deployer</h1>
-          <p>Deploy from GitHub releases with ease</p>
-        </div>
-      </div>
-      <div class="user-nav">
-        <div class="user-info" id="userInfo">
-          <img src="" alt="" class="user-avatar" id="userAvatar">
-          <span class="user-name" id="userName">Loading...</span>
-        </div>
-        <form action="/auth/logout" method="POST" style="display: inline;">
-          <button type="submit" class="logout-btn">Logout</button>
+  <div class="container">
+    <header>
+      <div class="logo">railway<span>/deployer</span></div>
+      <div class="user">
+        <img src="" id="userAvatar" alt="">
+        <span class="user-name" id="userName">—</span>
+        <form action="/auth/logout" method="POST" style="display:inline;">
+          <button type="submit" class="btn-secondary">logout</button>
         </form>
       </div>
     </header>
 
-    <div class="tabs">
-      <button class="tab active" data-tab="deploy">Deployments</button>
-      <button class="tab" data-tab="collaborators" id="collaboratorsTab" style="display: none;">Collaborators</button>
-      <button class="tab" data-tab="settings">Settings</button>
+    <div class="nav">
+      <button class="active" data-tab="deploy">deployments</button>
+      <button id="collabTab" style="display:none;">team</button>
+      <button data-tab="settings">settings</button>
     </div>
 
-    <div id="deployTab">
+    <div id="deploySection">
       <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">
-            <span class="card-title-icon">📦</span>
-            New Deployment
-          </h2>
-        </div>
+        <div class="card-header">new deployment</div>
         <form id="deployForm" class="form-grid">
           <div class="form-group">
-            <label>Name <span class="required">*</span></label>
-            <input type="text" name="name" required placeholder="my-awesome-app">
+            <label>name <span>*</span></label>
+            <input type="text" name="name" required placeholder="app-name">
           </div>
           <div class="form-group">
-            <label>Project ID <span class="required">*</span></label>
-            <input type="text" name="projectId" required placeholder="proj_xxxxxxxxxxxx">
+            <label>project id <span>*</span></label>
+            <input type="text" name="projectId" required placeholder="proj_xxx">
           </div>
           <div class="form-group">
-            <label>Service ID <span class="required">*</span></label>
-            <input type="text" name="serviceId" required placeholder="svc_xxxxxxxxxxxx">
+            <label>service id <span>*</span></label>
+            <input type="text" name="serviceId" required placeholder="svc_xxx">
           </div>
           <div class="form-group">
-            <label>Environment</label>
+            <label>environment</label>
             <input type="text" name="environmentId" placeholder="production">
           </div>
-          <div class="form-group full-width">
-            <label>Repository <span class="required">*</span></label>
+          <div class="form-group full">
+            <label>repository <span>*</span></label>
             <div class="repo-selector">
-              <input type="text" id="repoInput" name="repo" required placeholder="Search repositories..." autocomplete="off">
+              <input type="text" id="repoInput" name="repo" required placeholder="search repos..." autocomplete="off">
               <div class="repo-dropdown" id="repoDropdown"></div>
             </div>
           </div>
           <div class="form-group">
-            <label>Release <span class="required">*</span></label>
+            <label>release <span>*</span></label>
             <select id="releaseSelect" name="releaseTag" required disabled>
-              <option value="">— select a repo first —</option>
+              <option value="">— select repo —</option>
             </select>
-            <span id="releaseStatus" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;"></span>
           </div>
-          <div class="form-group full-width" style="margin-top: 0.5rem;">
-            <button type="submit" class="btn btn-primary">
-              <span>🚀</span> Deploy Application
-            </button>
+          <div class="form-group full" style="margin-top:8px;">
+            <button type="submit" class="btn-primary">deploy</button>
           </div>
         </form>
       </div>
 
       <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">
-            <span class="card-title-icon">📊</span>
-            Active Deployments
-          </h2>
-        </div>
-        <div class="deployments-list" id="deploymentsList">
-          <div class="empty-state">
-            <div class="empty-state-icon">📭</div>
-            <h3>No deployments yet</h3>
-            <p>Create your first deployment using the form above</p>
+        <div class="card-header">active deployments</div>
+        <div class="deploy-list" id="deployList">
+          <div class="empty">
+            <div class="empty-icon">[ ]</div>
+            no deployments
           </div>
         </div>
       </div>
     </div>
 
-    <div id="collaboratorsTab" class="hidden">
+    <div id="collabSection" class="hidden">
       <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">
-            <span class="card-title-icon">👥</span>
-            Team Members
-          </h2>
-        </div>
-        <div class="collaborators-list" id="collaboratorsList">
-          <div class="empty-state">
-            <div class="empty-state-icon">👤</div>
-            <h3>No other members</h3>
-            <p>Invite team members by their GitHub username</p>
+        <div class="card-header">team members</div>
+        <div class="collab-list" id="collabList">
+          <div class="empty">
+            <div class="empty-icon">[ ]</div>
+            no other members
           </div>
         </div>
-        <div class="invite-form">
-          <input type="text" id="inviteUsername" placeholder="GitHub username">
-          <button type="button" class="btn btn-secondary" onclick="inviteCollaborator()">Invite</button>
+        <div class="invite-row">
+          <input type="text" id="inviteInput" placeholder="github username">
+          <button class="btn-secondary" onclick="inviteUser()">invite</button>
         </div>
       </div>
     </div>
 
-    <div id="settingsTab" class="hidden">
+    <div id="settingsSection" class="hidden">
       <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">
-            <span class="card-title-icon">⚙️</span>
-            Railway Token
-          </h2>
-        </div>
+        <div class="card-header">railway token</div>
         <form id="tokenForm" class="form-grid">
-          <div class="form-group full-width">
-            <label>API Token <span class="required">*</span></label>
-            <input type="password" name="token" required placeholder="rail_xxxxxxxxxxxx">
+          <div class="form-group full">
+            <label>api token <span>*</span></label>
+            <input type="password" name="token" required placeholder="rail_xxx">
           </div>
           <div class="form-group">
-            <label>Project ID</label>
-            <input type="text" name="projectId" placeholder="proj_xxxxxxxxxxxx">
+            <label>project id</label>
+            <input type="text" name="projectId" placeholder="proj_xxx">
           </div>
-          <div class="form-group full-width" style="margin-top: 0.5rem;">
-            <button type="submit" class="btn btn-primary">Save Token</button>
+          <div class="form-group full" style="margin-top:8px;">
+            <button type="submit" class="btn-primary">save</button>
           </div>
         </form>
-        <div id="tokensList" style="margin-top: 1.5rem;"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">
-            <span class="card-title-icon">🌐</span>
-            Custom Domains
-          </h2>
-        </div>
-        <p style="color: var(--text-secondary); margin-bottom: 1rem;">Add custom domains to your deployments from the deployments list.</p>
+        <div class="token-list" id="tokenList"></div>
       </div>
     </div>
   </div>
 
-  <div id="domainModal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 1000;">
-    <div class="card" style="width: 100%; max-width: 480px; margin: 0;">
-      <div class="card-header">
-        <h2 class="card-title">Add Custom Domain</h2>
-        <button type="button" onclick="closeDomainModal()" style="background: none; border: none; color: var(--text-secondary); font-size: 1.5rem; cursor: pointer;">&times;</button>
-      </div>
+  <div id="domainModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;">
+    <div class="card" style="width:360px;margin:0;">
+      <div class="card-header">add domain</div>
       <form id="domainForm">
-        <input type="hidden" id="domainDeploymentId">
+        <input type="hidden" id="domainDeployId">
         <div class="form-group">
-          <label>Domain <span class="required">*</span></label>
-          <input type="text" id="domainInput" required placeholder="app.yoursite.com">
+          <label>domain <span>*</span></label>
+          <input type="text" id="domainInput" required placeholder="app.example.com">
         </div>
-        <div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
-          <button type="submit" class="btn btn-primary">Add Domain</button>
-          <button type="button" class="btn btn-secondary" onclick="closeDomainModal()">Cancel</button>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button type="submit" class="btn-primary">add</button>
+          <button type="button" class="btn-secondary" onclick="closeDomainModal()">cancel</button>
         </div>
       </form>
     </div>
@@ -1476,66 +1245,44 @@ async function handleRequest(req: Request): Promise<Response> {
   <script>
     let currentUser = null;
     let allRepos = [];
-    let deployments = [];
 
     async function loadUser() {
       const res = await fetch('/api/user');
-      if (!res.ok) {
-        window.location.href = '/auth/login';
-        return null;
-      }
+      if (!res.ok) { window.location.href = '/auth/login'; return null; }
       currentUser = await res.json();
-      
       document.getElementById('userAvatar').src = currentUser.avatarUrl || 'https://github.com/ghost.png';
-      document.getElementById('userAvatar').alt = currentUser.username;
       document.getElementById('userName').textContent = currentUser.username;
-      
       if (currentUser.isOwner) {
-        document.getElementById('collaboratorsTab').style.display = 'block';
+        document.getElementById('collabTab').style.display = 'block';
       }
-      
       return currentUser;
     }
 
     async function loadDeployments() {
       const res = await fetch('/api/deployments');
-      deployments = await res.json();
-      renderDeployments();
-    }
-
-    function renderDeployments() {
-      const list = document.getElementById('deploymentsList');
+      const data = await res.json();
+      const list = document.getElementById('deployList');
       
-      if (!deployments.length) {
-        list.innerHTML = \`
-          <div class="empty-state">
-            <div class="empty-state-icon">📭</div>
-            <h3>No deployments yet</h3>
-            <p>Create your first deployment using the form above</p>
-          </div>
-        \`;
+      if (!data.length) {
+        list.innerHTML = '<div class="empty"><div class="empty-icon">[ ]</div>no deployments</div>';
         return;
       }
 
-      list.innerHTML = deployments.map(d => \`
-        <div class="deployment-item">
-          <div class="deployment-info">
-            <h4>\${d.name}</h4>
-            <div class="deployment-meta">
-              <span>📦 \${d.repo || '—'}</span>
-              <span>🏷️ \${d.releaseTag || '—'}</span>
-              <span>🕐 \${d.lastDeployedAt ? new Date(d.lastDeployedAt).toLocaleDateString() : 'Never'}</span>
+      list.innerHTML = data.map(d => \`
+        <div class="deploy-item">
+          <div>
+            <div class="deploy-name">\${d.name}</div>
+            <div class="deploy-meta">
+              <span>\${d.repo || '—'}</span>
+              <span>\${d.releaseTag || '—'}</span>
+              \${d.customDomain ? '<span>' + d.customDomain + '</span>' : ''}
             </div>
-            \${d.customDomain ? \`<div class="deployment-meta" style="margin-top: 0.25rem;"><span>🌐 \${d.customDomain}</span></div>\` : ''}
           </div>
-          <span class="status-badge status-\${d.status}">
-            <span class="status-dot"></span>
-            \${d.status}
-          </span>
-          <div class="deployment-actions">
-            <button class="btn btn-success btn-sm" onclick="redeploy('\${d.id}')">Redeploy</button>
-            <button class="btn btn-secondary btn-sm" onclick="openDomainModal('\${d.id}', '\${d.customDomain || ''}')">🌐 Domain</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteDeployment('\${d.id}')">Delete</button>
+          <span class="status \${d.status}">\${d.status}</span>
+          <div class="actions">
+            <button class="btn-secondary" onclick="redeploy('\${d.id}')">redeploy</button>
+            <button class="btn-secondary" onclick="openDomainModal('\${d.id}', '\${d.customDomain || ''}')">domain</button>
+            <button class="btn-danger" onclick="deleteDeploy('\${d.id}')">del</button>
           </div>
         </div>
       \`).join('');
@@ -1550,197 +1297,133 @@ async function handleRequest(req: Request): Promise<Response> {
     function setupRepoSelector() {
       const input = document.getElementById('repoInput');
       const dropdown = document.getElementById('repoDropdown');
-      const releaseSelect = document.getElementById('releaseSelect');
-      const releaseStatus = document.getElementById('releaseStatus');
 
       input.addEventListener('focus', () => {
-        if (allRepos.length) {
-          renderRepoDropdown(allRepos);
-          dropdown.classList.add('active');
-        }
+        if (allRepos.length) { renderRepos(allRepos); dropdown.classList.add('active'); }
       });
 
       input.addEventListener('input', (e) => {
-        const query = e.target.value.toLowerCase();
-        if (query.length > 0) {
-          const filtered = allRepos.filter(r => 
-            r.full_name.toLowerCase().includes(query) ||
-            (r.description && r.description.toLowerCase().includes(query))
-          );
-          renderRepoDropdown(filtered);
+        const q = e.target.value.toLowerCase();
+        if (q.length > 0) {
+          renderRepos(allRepos.filter(r => r.full_name.toLowerCase().includes(q)));
         } else {
-          renderRepoDropdown(allRepos);
+          renderRepos(allRepos);
         }
         dropdown.classList.add('active');
-        
-        if (query.includes('/')) {
-          debouncedFetchReleases(query);
-        } else {
-          releaseSelect.innerHTML = '<option value="">— select a repo first —</option>';
-          releaseSelect.disabled = true;
-          releaseStatus.textContent = '';
-        }
+        if (q.includes('/')) fetchReleases(q);
       });
 
       document.addEventListener('click', (e) => {
-        if (!e.target.closest('.repo-selector')) {
-          dropdown.classList.remove('active');
-        }
+        if (!e.target.closest('.repo-selector')) dropdown.classList.remove('active');
       });
     }
 
-    function renderRepoDropdown(repos) {
+    function renderRepos(repos) {
       const dropdown = document.getElementById('repoDropdown');
       if (!repos.length) {
-        dropdown.innerHTML = '<div style="padding: 1rem; text-align: center; color: var(--text-muted);">No repositories found</div>';
+        dropdown.innerHTML = '<div class="repo-item">no repos</div>';
         return;
       }
       dropdown.innerHTML = repos.map(r => \`
-        <div class="repo-dropdown-item \${r.private ? 'private' : ''}" onclick="selectRepo('\${r.full_name}')">
-          <div class="repo-name">\${r.full_name} \${r.private ? '🔒' : ''}</div>
-          \${r.description ? \`<div class="repo-desc">\${r.description}</div>\` : ''}
+        <div class="repo-item \${r.private ? 'private' : ''}" onclick="selectRepo('\${r.full_name}')">
+          \${r.full_name} \${r.private ? '🔒' : ''}
         </div>
       \`).join('');
     }
 
-    function selectRepo(fullName) {
-      document.getElementById('repoInput').value = fullName;
+    function selectRepo(name) {
+      document.getElementById('repoInput').value = name;
       document.getElementById('repoDropdown').classList.remove('active');
-      debouncedFetchReleases(fullName);
+      fetchReleases(name);
     }
 
-    let releaseDebounceTimer = null;
-    function debouncedFetchReleases(repo) {
-      clearTimeout(releaseDebounceTimer);
-      const select = document.getElementById('releaseSelect');
-      const status = document.getElementById('releaseStatus');
-      
+    let releaseTimer = null;
+    function fetchReleases(repo) {
+      clearTimeout(releaseTimer);
+      const sel = document.getElementById('releaseSelect');
       if (!repo || !repo.includes('/')) {
-        select.innerHTML = '<option value="">— select a valid repo —</option>';
-        select.disabled = true;
-        status.textContent = '';
+        sel.innerHTML = '<option value="">— select repo —</option>';
+        sel.disabled = true;
         return;
       }
-
-      status.textContent = 'Fetching releases...';
-      releaseDebounceTimer = setTimeout(async () => {
-        try {
-          const res = await fetch('/api/releases?repo=' + encodeURIComponent(repo));
-          if (!res.ok) {
-            const err = await res.json();
-            status.textContent = err.error || 'Failed to load';
-            select.innerHTML = '<option value="">— error —</option>';
-            select.disabled = true;
-            return;
-          }
-          const releases = await res.json();
-          if (!releases.length) {
-            status.textContent = 'No releases found';
-            select.innerHTML = '<option value="">— no releases —</option>';
-            select.disabled = true;
-            return;
-          }
-          select.innerHTML = releases.map(r => 
-            \`<option value="\${r.tag_name}">\${r.name || r.tag_name} (\${r.tag_name})</option>\`
-          ).join('');
-          select.disabled = false;
-          status.textContent = \`\${releases.length} release\${releases.length === 1 ? '' : 's'} available\`;
-        } catch (e) {
-          status.textContent = 'Network error';
-          select.disabled = true;
-        }
-      }, 500);
+      releaseTimer = setTimeout(async () => {
+        const res = await fetch('/api/releases?repo=' + encodeURIComponent(repo));
+        if (!res.ok) { sel.innerHTML = '<option value="">— error —</option>'; sel.disabled = true; return; }
+        const data = await res.json();
+        if (!data.length) { sel.innerHTML = '<option value="">— no releases —</option>'; sel.disabled = true; return; }
+        sel.innerHTML = data.map(r => \`<option value="\${r.tag_name}">\${r.name || r.tag_name}</option>\`).join('');
+        sel.disabled = false;
+      }, 400);
     }
 
     async function loadCollaborators() {
+      if (!currentUser) currentUser = await loadUser();
       if (!currentUser?.isOwner) return;
-      
       const res = await fetch('/api/collaborators');
+      if (!res.ok) return;
       const users = await res.json();
+      const list = document.getElementById('collabList');
       
-      const list = document.getElementById('collaboratorsList');
       if (users.length <= 1) {
-        list.innerHTML = \`
-          <div class="empty-state">
-            <div class="empty-state-icon">👤</div>
-            <h3>No other members</h3>
-            <p>Invite team members by their GitHub username</p>
-          </div>
-        \`;
+        list.innerHTML = '<div class="empty"><div class="empty-icon">[ ]</div>no other members</div>';
         return;
       }
-
+      
       list.innerHTML = users.map(u => \`
-        <div class="collaborator-item">
-          <div class="collaborator-info">
-            <img src="\${u.avatarUrl || 'https://github.com/ghost.png'}" alt="\${u.username}" class="collaborator-avatar">
+        <div class="collab-item">
+          <div class="collab-info">
+            <img src="\${u.avatarUrl || 'https://github.com/ghost.png'}" alt="">
             <div>
-              <div class="collaborator-name">\${u.username}</div>
-              <div class="collaborator-role \${u.isOwner ? 'owner' : ''}">\${u.isOwner ? 'Owner' : u.isAuthorized ? 'Collaborator' : 'Pending'}</div>
+              <div class="collab-name">\${u.username}</div>
+              <div class="collab-role \${u.isOwner ? 'owner' : ''}">\${u.isOwner ? 'owner' : u.isAuthorized ? 'collaborator' : 'pending'}</div>
             </div>
           </div>
-          \${!u.isOwner ? \`<button class="btn btn-danger btn-sm" onclick="removeCollaborator('\${u.id}')">Remove</button>\` : ''}
+          \${!u.isOwner ? '<button class=\"btn-danger\" onclick=\"removeUser(\\'' + u.id + '\\')\">remove</button>' : ''}
         </div>
       \`).join('');
     }
 
-    async function inviteCollaborator() {
-      const input = document.getElementById('inviteUsername');
-      const username = input.value.trim();
-      if (!username) return;
-
+    async function inviteUser() {
+      const inp = document.getElementById('inviteInput');
+      const u = inp.value.trim();
+      if (!u) return;
       const res = await fetch('/api/collaborators/invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username })
+        body: JSON.stringify({ username: u })
       });
-
       const data = await res.json();
       if (res.ok) {
-        showToast('Collaborator invited successfully', 'success');
-        input.value = '';
+        showToast('invited');
+        inp.value = '';
         loadCollaborators();
       } else {
-        showToast(data.error || 'Failed to invite', 'error');
+        showToast(data.error || 'error', true);
       }
     }
 
-    async function removeCollaborator(id) {
-      if (!confirm('Remove this collaborator?')) return;
-      
+    async function removeUser(id) {
+      if (!confirm('remove?')) return;
       const res = await fetch('/api/collaborators/' + id, { method: 'DELETE' });
-      if (res.ok) {
-        showToast('Collaborator removed', 'success');
-        loadCollaborators();
-      }
+      if (res.ok) { showToast('removed'); loadCollaborators(); }
     }
 
     async function loadTokens() {
       const res = await fetch('/api/tokens');
       const tokens = await res.json();
-      
-      const list = document.getElementById('tokensList');
-      if (!tokens.length) {
-        list.innerHTML = '';
-        return;
-      }
-
-      list.innerHTML = \`
-        <h4 style="margin-bottom: 0.75rem; color: var(--text-secondary);">Saved Tokens</h4>
-        \${tokens.map(t => \`
-          <div class="collaborator-item">
-            <div class="collaborator-info">
-              <div class="collaborator-name">\${t.token}</div>
-              <div class="collaborator-role">\${t.projectId || 'No project'} \${t.isDefault ? '• Default' : ''}</div>
-            </div>
-          </div>
-        \`).join('')}
-      \`;
+      const list = document.getElementById('tokenList');
+      if (!tokens.length) { list.innerHTML = ''; return; }
+      list.innerHTML = '<div class="section-title">saved</div>' + tokens.map(t => \`
+        <div class="token-item">
+          <span class="token-mask">\${t.token}</span>
+          <span style="color:var(--text-muted);font-size:10px;">\${t.projectId || '—'}\${t.isDefault ? ' • default' : ''}</span>
+        </div>
+      \`).join('');
     }
 
-    function openDomainModal(deploymentId, existingDomain) {
-      document.getElementById('domainDeploymentId').value = deploymentId;
-      document.getElementById('domainInput').value = existingDomain;
+    function openDomainModal(id, existing) {
+      document.getElementById('domainDeployId').value = id;
+      document.getElementById('domainInput').value = existing;
       document.getElementById('domainModal').classList.remove('hidden');
     }
 
@@ -1750,119 +1433,81 @@ async function handleRequest(req: Request): Promise<Response> {
 
     async function submitDomain(e) {
       e.preventDefault();
-      const deploymentId = document.getElementById('domainDeploymentId').value;
+      const id = document.getElementById('domainDeployId').value;
       const domain = document.getElementById('domainInput').value;
-
-      const res = await fetch('/api/deployments/' + deploymentId + '/domain', {
+      const res = await fetch('/api/deployments/' + id + '/domain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain })
       });
-
-      if (res.ok) {
-        showToast('Domain added successfully', 'success');
-        closeDomainModal();
-        loadDeployments();
-      } else {
-        const data = await res.json();
-        showToast(data.error || 'Failed to add domain', 'error');
-      }
+      if (res.ok) { showToast('domain added'); closeDomainModal(); loadDeployments(); }
+      else { const d = await res.json(); showToast(d.error || 'error', true); }
     }
 
-    function showToast(message, type = 'success') {
-      const toast = document.createElement('div');
-      toast.className = 'toast ' + type;
-      toast.textContent = message;
-      document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 3000);
+    function showToast(msg, err = false) {
+      const t = document.createElement('div');
+      t.className = 'toast' + (err ? ' error' : '');
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 2500);
     }
 
-    // Tab switching
-    document.querySelectorAll('.tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        
-        document.getElementById('deployTab')?.classList.add('hidden');
-        document.getElementById('collaboratorsTab')?.classList.add('hidden');
-        document.getElementById('settingsTab')?.classList.add('hidden');
-        
-        const tabId = tab.dataset.tab + 'Tab';
-        document.getElementById(tabId)?.classList.remove('hidden');
-        
-        if (tab.dataset.tab === 'collaborators') loadCollaborators();
-        if (tab.dataset.tab === 'settings') loadTokens();
+    // tabs
+    document.querySelectorAll('.nav button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('deploySection')?.classList.add('hidden');
+        document.getElementById('collabSection')?.classList.add('hidden');
+        document.getElementById('settingsSection')?.classList.add('hidden');
+        if (btn.dataset.tab === 'deploy') document.getElementById('deploySection').classList.remove('hidden');
+        if (btn.dataset.tab === 'collab') { document.getElementById('collabSection').classList.remove('hidden'); loadCollaborators(); }
+        if (btn.dataset.tab === 'settings') { document.getElementById('settingsSection').classList.remove('hidden'); loadTokens(); }
       });
     });
 
-    // Deploy form
+    // forms
     document.getElementById('deployForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const form = e.target;
-      const data = {
-        name: form.name.value,
-        projectId: form.projectId.value,
-        serviceId: form.serviceId.value,
-        environmentId: form.environmentId.value,
-        releaseTag: form.releaseTag.value,
-        repo: form.repo.value,
+      const f = e.target;
+      const d = {
+        name: f.name.value,
+        projectId: f.projectId.value,
+        serviceId: f.serviceId.value,
+        environmentId: f.environmentId.value,
+        releaseTag: f.releaseTag.value,
+        repo: f.repo.value
       };
-
       const res = await fetch('/api/deployments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify(d)
       });
-
-      if (res.ok) {
-        showToast('Deployment started', 'success');
-        form.reset();
-        document.getElementById('releaseSelect').innerHTML = '<option value="">— select a repo first —</option>';
-        document.getElementById('releaseSelect').disabled = true;
-        loadDeployments();
-      } else {
-        const err = await res.json();
-        showToast(err.error || 'Deployment failed', 'error');
-      }
+      if (res.ok) { showToast('deploying'); f.reset(); loadDeployments(); }
+      else { const err = await res.json(); showToast(err.error || 'error', true); }
     });
 
-    // Token form
     document.getElementById('tokenForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const form = e.target;
-      const data = {
-        token: form.token.value,
-        projectId: form.projectId.value,
-        isDefault: true
-      };
-
+      const f = e.target;
       const res = await fetch('/api/tokens', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ token: f.token.value, projectId: f.projectId.value, isDefault: true })
       });
-
-      if (res.ok) {
-        showToast('Token saved', 'success');
-        form.reset();
-        loadTokens();
-      }
+      if (res.ok) { showToast('saved'); f.reset(); loadTokens(); }
     });
 
-    // Domain form
     document.getElementById('domainForm').addEventListener('submit', submitDomain);
 
     async function redeploy(id) {
       const res = await fetch('/api/deployments/' + id + '/redeploy', { method: 'POST' });
-      if (!res.ok) {
-        const err = await res.json();
-        showToast(err.error || 'Redeploy failed', 'error');
-      }
+      if (!res.ok) { const e = await res.json(); showToast(e.error || 'error', true); }
       loadDeployments();
     }
 
-    async function deleteDeployment(id) {
-      if (!confirm('Delete this deployment?')) return;
+    async function deleteDeploy(id) {
+      if (!confirm('delete?')) return;
       await fetch('/api/deployments', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -1871,7 +1516,7 @@ async function handleRequest(req: Request): Promise<Response> {
       loadDeployments();
     }
 
-    // Init
+    // init
     loadUser().then(() => {
       loadDeployments();
       loadRepos();
