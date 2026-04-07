@@ -66,4 +66,7 @@ async function migrate() {
   process.exit(0);
 }
 
-migrate();
+// Only run when this file is the entry point, not when imported as a module
+if (import.meta.main) {
+  migrate();
+}
