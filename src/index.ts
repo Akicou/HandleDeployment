@@ -162,6 +162,16 @@ async function getProjectServicesForUser(userId: string, projectId: string): Pro
   return client.getProjectServices(projectId);
 }
 
+async function validateRailwayTokenForProject(token: string, projectId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const client = new RailwayClient(token);
+    await client.getProjectServices(projectId);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: decorateRailwayAuthError(errorMessage(error)) };
+  }
+}
+
 async function resolveServiceIdForProject(
   userId: string,
   projectId: string,
@@ -737,6 +747,13 @@ async function handleRequest(req: Request): Promise<Response> {
       return jsonResponse({ error: 'Missing token' }, { status: 400 });
     }
 
+    if (projectId) {
+      const validation = await validateRailwayTokenForProject(token, projectId);
+      if (!validation.ok) {
+        return jsonResponse({ error: validation.error || 'Token validation failed' }, { status: 400 });
+      }
+    }
+
     if (isDefault) {
       await db
         .update(schema.railwayTokens)
@@ -790,12 +807,25 @@ async function handleRequest(req: Request): Promise<Response> {
       .from(schema.railwayTokens)
       .where(eq(schema.railwayTokens.userId, session.userId));
 
-    const maskedTokens = tokens.map(tokenRecord => ({
-      id: tokenRecord.id,
-      projectId: tokenRecord.projectId,
-      isDefault: tokenRecord.isDefault,
-      createdAt: tokenRecord.createdAt,
-      token: tokenRecord.token.substring(0, 8) + '****',
+    const maskedTokens = await Promise.all(tokens.map(async (tokenRecord) => {
+      let status = 'unknown';
+      let validationError: string | undefined;
+
+      if (tokenRecord.projectId) {
+        const validation = await validateRailwayTokenForProject(tokenRecord.token, tokenRecord.projectId);
+        status = validation.ok ? 'ok' : 'error';
+        validationError = validation.error;
+      }
+
+      return {
+        id: tokenRecord.id,
+        projectId: tokenRecord.projectId,
+        isDefault: tokenRecord.isDefault,
+        createdAt: tokenRecord.createdAt,
+        token: tokenRecord.token.substring(0, 8) + '****',
+        status,
+        validationError,
+      };
     }));
 
     return jsonResponse(maskedTokens);
@@ -1896,8 +1926,9 @@ async function handleRequest(req: Request): Promise<Response> {
         <div class="token-item">
           <span class="token-mask">\${t.token}</span>
           <button class="btn-danger" onclick="deleteToken('\${t.id}')">delete</button>
-          <span style="color:var(--text-muted);font-size:10px;">\${t.projectId || '—'}\${t.isDefault ? ' • default' : ''}</span>
+          <span style="color:var(--text-muted);font-size:10px;">\${t.projectId || '—'}\${t.isDefault ? ' • default' : ''}\${t.status === 'ok' ? ' • verified' : t.status === 'error' ? ' • invalid' : ''}</span>
         </div>
+        \${t.validationError ? '<div style="color:var(--danger);font-size:10px;margin:-2px 0 8px 0;">' + t.validationError + '</div>' : ''}
       \`).join('');
     }
 
