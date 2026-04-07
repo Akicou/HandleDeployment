@@ -5,24 +5,37 @@ interface RailwayResponse<T> {
   errors?: Array<{ message: string }>;
 }
 
-export class RailwayClient {
-  private token: string;
+interface ServiceRecord {
+  id: string;
+  name: string;
+  icon: string;
+  createdAt: string;
+  projectId: string;
+}
 
-  constructor(token: string) {
-    this.token = token;
-  }
+export interface DeploymentConfig {
+  name: string;
+  projectId: string;
+  serviceId: string;
+  environmentId?: string;
+  repo?: string;
+  branch?: string;
+}
+
+export class RailwayClient {
+  constructor(private readonly token: string) {}
 
   private async query<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
     const response = await fetch(RAILWAY_GRAPHQL_ENDPOINT, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${this.token}`,
+        Authorization: `Bearer ${this.token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ query, variables }),
     });
 
-    const result: RailwayResponse<T> = await response.json();
+    const result = await response.json() as RailwayResponse<T>;
 
     if (result.errors && result.errors.length > 0) {
       throw new Error(result.errors[0].message);
@@ -35,7 +48,7 @@ export class RailwayClient {
     return result.data;
   }
 
-  async getService(serviceId: string) {
+  async getService(serviceId: string): Promise<ServiceRecord> {
     const query = `
       query service($id: String!) {
         service(id: $id) {
@@ -47,10 +60,11 @@ export class RailwayClient {
         }
       }
     `;
-    return this.query<{ service: { id: string; name: string; icon: string; createdAt: string; projectId: string } }>(query, { id: serviceId });
+    const result = await this.query<{ service: ServiceRecord }>(query, { id: serviceId });
+    return result.service;
   }
 
-  async getServiceInstance(serviceId: string, environmentId: string) {
+  async getServiceInstance(serviceId: string, environmentId: string): Promise<unknown> {
     const query = `
       query serviceInstance($serviceId: String!, $environmentId: String!) {
         serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
@@ -68,10 +82,11 @@ export class RailwayClient {
         }
       }
     `;
-    return this.query<{ serviceInstance: unknown }>(query, { serviceId, environmentId });
+    const result = await this.query<{ serviceInstance: unknown }>(query, { serviceId, environmentId });
+    return result.serviceInstance;
   }
 
-  async connectService(serviceId: string, repo: string, branch: string) {
+  async connectService(serviceId: string, repo: string, branch: string): Promise<string> {
     const query = `
       mutation serviceConnect($id: String!, $input: ServiceConnectInput!) {
         serviceConnect(id: $id, input: $input) {
@@ -79,13 +94,14 @@ export class RailwayClient {
         }
       }
     `;
-    return this.query<{ serviceConnect: { id: string } }>(query, {
+    const result = await this.query<{ serviceConnect: { id: string } }>(query, {
       id: serviceId,
       input: { repo, branch },
     });
+    return result.serviceConnect.id;
   }
 
-  async disconnectService(serviceId: string) {
+  async disconnectService(serviceId: string): Promise<string> {
     const query = `
       mutation serviceDisconnect($id: String!) {
         serviceDisconnect(id: $id) {
@@ -93,34 +109,41 @@ export class RailwayClient {
         }
       }
     `;
-    return this.query<{ serviceDisconnect: { id: string } }>(query, { id: serviceId });
+    const result = await this.query<{ serviceDisconnect: { id: string } }>(query, { id: serviceId });
+    return result.serviceDisconnect.id;
   }
 
-  async deployService(serviceId: string, environmentId: string) {
+  async deployService(serviceId: string, environmentId: string): Promise<string> {
     const query = `
       mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!) {
         serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId)
       }
     `;
-    return this.query<{ serviceInstanceDeployV2: string }>(query, { serviceId, environmentId });
+    const result = await this.query<{ serviceInstanceDeployV2: string }>(query, { serviceId, environmentId });
+    return result.serviceInstanceDeployV2;
   }
 
-  async redeployService(serviceId: string, environmentId: string) {
+  async redeployService(serviceId: string, environmentId: string): Promise<string> {
     const query = `
       mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
         serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
       }
     `;
-    return this.query<{ serviceInstanceRedeploy: string }>(query, { serviceId, environmentId });
+    const result = await this.query<{ serviceInstanceRedeploy: string }>(query, { serviceId, environmentId });
+    return result.serviceInstanceRedeploy;
   }
 
-  async getVariables(projectId: string, environmentId: string, serviceId?: string) {
+  async getVariables(projectId: string, environmentId: string, serviceId?: string): Promise<Record<string, string>> {
     const query = `
       query variables($projectId: String!, $environmentId: String!, $serviceId: String) {
         variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId)
       }
     `;
-    return this.query<{ variables: Record<string, string> }>(query, { projectId, environmentId, serviceId });
+    const result = await this.query<{ variables: Record<string, string> }>(
+      query,
+      { projectId, environmentId, serviceId }
+    );
+    return result.variables;
   }
 
   async upsertVariable(input: {
@@ -129,13 +152,14 @@ export class RailwayClient {
     serviceId?: string;
     name: string;
     value: string;
-  }) {
+  }): Promise<boolean> {
     const query = `
       mutation variableUpsert($input: VariableUpsertInput!) {
         variableUpsert(input: $input)
       }
     `;
-    return this.query<{ variableUpsert: boolean }>(query, { input });
+    const result = await this.query<{ variableUpsert: boolean }>(query, { input });
+    return result.variableUpsert;
   }
 
   async bulkUpsertVariables(input: {
@@ -143,13 +167,14 @@ export class RailwayClient {
     environmentId: string;
     serviceId?: string;
     variables: Record<string, string>;
-  }) {
+  }): Promise<boolean> {
     const query = `
       mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) {
         variableCollectionUpsert(input: $input)
       }
     `;
-    return this.query<{ variableCollectionUpsert: boolean }>(query, { input });
+    const result = await this.query<{ variableCollectionUpsert: boolean }>(query, { input });
+    return result.variableCollectionUpsert;
   }
 
   async deleteVariable(input: {
@@ -157,37 +182,38 @@ export class RailwayClient {
     environmentId: string;
     serviceId?: string;
     name: string;
-  }) {
+  }): Promise<boolean> {
     const query = `
       mutation variableDelete($input: VariableDeleteInput!) {
         variableDelete(input: $input)
       }
     `;
-    return this.query<{ variableDelete: boolean }>(query, { input });
+    const result = await this.query<{ variableDelete: boolean }>(query, { input });
+    return result.variableDelete;
   }
-}
 
-export interface DeploymentConfig {
-  name: string;
-  projectId: string;
-  serviceId: string;
-  environmentId?: string;
-  releaseTag?: string;
-  repo?: string;
+  async addCustomDomain(serviceId: string, domain: string): Promise<string> {
+    const query = `
+      mutation serviceInstanceAddDomain($serviceId: String!, $domain: String!) {
+        serviceInstanceAddDomain(serviceId: $serviceId, domain: $domain) {
+          id
+        }
+      }
+    `;
+    const result = await this.query<{ serviceInstanceAddDomain: { id: string } }>(query, { serviceId, domain });
+    return result.serviceInstanceAddDomain.id;
+  }
 }
 
 export async function deployToRailway(token: string, config: DeploymentConfig): Promise<string> {
   const client = new RailwayClient(token);
 
-  if (config.releaseTag && config.repo) {
-    // Railway's serviceConnect accepts tag names as the branch parameter
-    await client.connectService(config.serviceId, config.repo, config.releaseTag);
+  if (config.repo && config.branch) {
+    await client.connectService(config.serviceId, config.repo, config.branch);
   }
 
   const environmentId = config.environmentId || 'production';
-  const deploymentId = await client.deployService(config.serviceId, environmentId);
-
-  return deploymentId;
+  return client.deployService(config.serviceId, environmentId);
 }
 
 export async function redeployToRailway(token: string, serviceId: string, environmentId?: string): Promise<string> {
@@ -203,12 +229,5 @@ export async function changeBranch(token: string, serviceId: string, repo: strin
 
 export async function addCustomDomain(token: string, serviceId: string, domain: string): Promise<void> {
   const client = new RailwayClient(token);
-  const query = `
-    mutation serviceInstanceAddDomain($serviceId: String!, $domain: String!) {
-      serviceInstanceAddDomain(serviceId: $serviceId, domain: $domain) {
-        id
-      }
-    }
-  `;
-  await client.query<{ serviceInstanceAddDomain: { id: string } }>(query, { serviceId, domain });
+  await client.addCustomDomain(serviceId, domain);
 }

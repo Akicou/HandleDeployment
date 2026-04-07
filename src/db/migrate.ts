@@ -11,6 +11,7 @@ export async function runMigrations(): Promise<void> {
       username VARCHAR(255) NOT NULL,
       email VARCHAR(255),
       avatar_url TEXT,
+      github_access_token TEXT,
       is_owner BOOLEAN DEFAULT false,
       is_authorized BOOLEAN DEFAULT false,
       created_at TIMESTAMP DEFAULT NOW() NOT NULL,
@@ -30,7 +31,11 @@ export async function runMigrations(): Promise<void> {
       repo VARCHAR(255),
       railway_token TEXT,
       status VARCHAR(50) DEFAULT 'pending',
+      auto_deploy BOOLEAN DEFAULT false,
       deployment_id VARCHAR(255),
+      custom_domain VARCHAR(255),
+      tracked_release_tag VARCHAR(255),
+      last_observed_release_tag VARCHAR(255),
       last_deployed_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW() NOT NULL,
       updated_at TIMESTAMP DEFAULT NOW() NOT NULL
@@ -51,6 +56,26 @@ export async function runMigrations(): Promise<void> {
   // Add release_tag column to existing databases that have the old branch column
   await db.execute(sql`
     ALTER TABLE deployments ADD COLUMN IF NOT EXISTS release_tag VARCHAR(255);
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS github_access_token TEXT;
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE deployments ADD COLUMN IF NOT EXISTS auto_deploy BOOLEAN DEFAULT false;
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE deployments ADD COLUMN IF NOT EXISTS custom_domain VARCHAR(255);
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE deployments ADD COLUMN IF NOT EXISTS tracked_release_tag VARCHAR(255);
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE deployments ADD COLUMN IF NOT EXISTS last_observed_release_tag VARCHAR(255);
   `);
 
   console.log('Migrations complete!');

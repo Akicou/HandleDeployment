@@ -1,19 +1,25 @@
 import { db, schema } from './db';
-import { RailwayClient, deployToRailway, redeployToRailway, addCustomDomain } from './api/railway';
+import { addCustomDomain, changeBranch, deployToRailway, redeployToRailway } from './api/railway';
 import {
-  getGitHubAuthUrl,
   exchangeCodeForToken,
   findOrCreateUser,
   generateState,
-  isUserAuthorized,
+  getGitHubAuthUrl,
   getGitHubReleases,
+  getGitHubRepo,
   getGitHubRepos,
   getGitHubUserByUsername,
+  isStableRelease,
+  isUserAuthorized,
+  sortReleasesNewestFirst,
 } from './auth/github';
 import { runMigrations } from './db/migrate';
 import { eq } from 'drizzle-orm';
+import type { Deployment, User } from './db/schema';
+import type { GitHubRelease, GitHubRepo } from './auth/github';
 
-const PORT = parseInt(process.env.PORT || '3000');
+const PORT = parseInt(process.env.PORT || '3000', 10);
+const RELEASE_WATCH_INTERVAL_MS = 5 * 60 * 1000;
 
 interface Session {
   userId: string;
@@ -21,7 +27,51 @@ interface Session {
   createdAt: Date;
 }
 
+interface CreateDeploymentBody {
+  name?: string;
+  projectId?: string;
+  serviceId?: string;
+  environmentId?: string;
+  releaseTag?: string;
+  repo?: string;
+  autoDeploy?: boolean;
+}
+
+interface DeleteDeploymentBody {
+  id?: string;
+}
+
+interface AuthorizeUserBody {
+  userId?: string;
+  authorized?: boolean;
+}
+
+interface SaveTokenBody {
+  token?: string;
+  projectId?: string;
+  isDefault?: boolean;
+}
+
+interface InviteCollaboratorBody {
+  username?: string;
+}
+
+interface AddDomainBody {
+  domain?: string;
+}
+
+interface ReleaseResolution {
+  repo: GitHubRepo;
+  stableReleases: GitHubRelease[];
+  latestStableRelease: GitHubRelease;
+  selectedRelease: GitHubRelease;
+}
+
+type PublicUser = Omit<User, 'githubAccessToken'>;
+type PublicDeployment = Omit<Deployment, 'railwayToken'>;
+
 const sessions = new Map<string, Session>();
+let releaseWatcherRunning = false;
 
 function generateSessionId(): string {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -48,6 +98,238 @@ function parseCookies(cookieHeader: string): Record<string, string> {
   return cookies;
 }
 
+function jsonResponse(payload: unknown, init: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(payload), {
+    status: init.status,
+    statusText: init.statusText,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function toPublicUser(user: User): PublicUser {
+  const { githubAccessToken: _token, ...publicUser } = user;
+  return publicUser;
+}
+
+function toPublicDeployment(deployment: Deployment): PublicDeployment {
+  const { railwayToken: _token, ...publicDeployment } = deployment;
+  return publicDeployment;
+}
+
+async function getUserById(userId: string): Promise<User | undefined> {
+  return db.select().from(schema.users).where(eq(schema.users.id, userId)).then(rows => rows[0]);
+}
+
+async function getDeploymentById(deploymentId: string): Promise<Deployment | undefined> {
+  return db.select().from(schema.deployments).where(eq(schema.deployments.id, deploymentId)).then(rows => rows[0]);
+}
+
+async function getRailwayTokenForUser(userId: string, projectId?: string): Promise<string | null> {
+  const tokens = await db
+    .select()
+    .from(schema.railwayTokens)
+    .where(eq(schema.railwayTokens.userId, userId));
+
+  const matchingToken = tokens.find(candidate => candidate.projectId && candidate.projectId === projectId)
+    || tokens.find(candidate => candidate.isDefault)
+    || tokens[0];
+
+  return matchingToken?.token || null;
+}
+
+async function resolveReleaseSelection(
+  githubToken: string,
+  repoFullName: string,
+  requestedReleaseTag?: string | null
+): Promise<ReleaseResolution> {
+  const [repo, releases] = await Promise.all([
+    getGitHubRepo(githubToken, repoFullName),
+    getGitHubReleases(githubToken, repoFullName),
+  ]);
+
+  const stableReleases = sortReleasesNewestFirst(releases.filter(isStableRelease));
+  const latestStableRelease = stableReleases[0];
+
+  if (!latestStableRelease) {
+    throw new Error(`No stable releases found for ${repoFullName}`);
+  }
+
+  let selectedRelease = latestStableRelease;
+  if (requestedReleaseTag) {
+    const matchingRelease = stableReleases.find(candidate => candidate.tag_name === requestedReleaseTag);
+    if (!matchingRelease) {
+      throw new Error(`"${requestedReleaseTag}" is not a valid stable release tag for ${repoFullName}`);
+    }
+    selectedRelease = matchingRelease;
+  }
+
+  return {
+    repo,
+    stableReleases,
+    latestStableRelease,
+    selectedRelease,
+  };
+}
+
+async function ensureDeploymentDefaultBranch(
+  deployment: Deployment,
+  githubToken: string
+): Promise<ReleaseResolution | null> {
+  if (!deployment.repo || !deployment.railwayToken) {
+    return null;
+  }
+
+  const releaseResolution = await resolveReleaseSelection(githubToken, deployment.repo);
+  await changeBranch(
+    deployment.railwayToken,
+    deployment.serviceId,
+    deployment.repo,
+    releaseResolution.repo.default_branch
+  );
+  return releaseResolution;
+}
+
+async function refreshReleaseMetadataWithoutDeploy(deployment: Deployment): Promise<void> {
+  if (!deployment.repo || deployment.trackedReleaseTag || deployment.releaseTag) {
+    return;
+  }
+
+  const owner = await getUserById(deployment.userId);
+  if (!owner?.githubAccessToken) {
+    return;
+  }
+
+  try {
+    const releaseResolution = await resolveReleaseSelection(owner.githubAccessToken, deployment.repo);
+    await db
+      .update(schema.deployments)
+      .set({
+        releaseTag: releaseResolution.latestStableRelease.tag_name,
+        trackedReleaseTag: releaseResolution.latestStableRelease.tag_name,
+        lastObservedReleaseTag: releaseResolution.latestStableRelease.tag_name,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.deployments.id, deployment.id));
+  } catch (error) {
+    console.error(`Failed to refresh release metadata for deployment ${deployment.id}: ${errorMessage(error)}`);
+  }
+}
+
+async function runReleaseWatcher(): Promise<void> {
+  if (releaseWatcherRunning) {
+    return;
+  }
+
+  releaseWatcherRunning = true;
+
+  try {
+    const deployments = await db
+      .select()
+      .from(schema.deployments)
+      .where(eq(schema.deployments.autoDeploy, true));
+
+    for (const deployment of deployments) {
+      if (!deployment.repo || !deployment.railwayToken) {
+        continue;
+      }
+
+      const owner = await getUserById(deployment.userId);
+      if (!owner?.githubAccessToken) {
+        continue;
+      }
+
+      try {
+        const releaseResolution = await resolveReleaseSelection(owner.githubAccessToken, deployment.repo);
+        const currentTrackedTag = deployment.trackedReleaseTag || deployment.releaseTag || null;
+        const latestTag = releaseResolution.latestStableRelease.tag_name;
+
+        if (!currentTrackedTag) {
+          await db
+            .update(schema.deployments)
+            .set({
+              releaseTag: latestTag,
+              trackedReleaseTag: latestTag,
+              lastObservedReleaseTag: latestTag,
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.deployments.id, deployment.id));
+          continue;
+        }
+
+        await db
+          .update(schema.deployments)
+          .set({
+            lastObservedReleaseTag: latestTag,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.deployments.id, deployment.id));
+
+        if (currentTrackedTag === latestTag) {
+          continue;
+        }
+
+        await db
+          .update(schema.deployments)
+          .set({
+            status: 'deploying',
+            lastObservedReleaseTag: latestTag,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.deployments.id, deployment.id));
+
+        await changeBranch(
+          deployment.railwayToken,
+          deployment.serviceId,
+          deployment.repo,
+          releaseResolution.repo.default_branch
+        );
+
+        const deploymentId = await redeployToRailway(
+          deployment.railwayToken,
+          deployment.serviceId,
+          deployment.environmentId || undefined
+        );
+
+        await db
+          .update(schema.deployments)
+          .set({
+            status: 'deployed',
+            deploymentId,
+            releaseTag: latestTag,
+            trackedReleaseTag: latestTag,
+            lastObservedReleaseTag: latestTag,
+            lastDeployedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.deployments.id, deployment.id));
+      } catch (error) {
+        await db
+          .update(schema.deployments)
+          .set({
+            status: 'failed',
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.deployments.id, deployment.id));
+
+        console.error(`Auto deploy failed for ${deployment.id}: ${errorMessage(error)}`);
+      }
+    }
+  } finally {
+    releaseWatcherRunning = false;
+  }
+}
+
+function startReleaseWatcher(): void {
+  void runReleaseWatcher();
+  setInterval(() => {
+    void runReleaseWatcher();
+  }, RELEASE_WATCH_INTERVAL_MS);
+}
+
 async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
@@ -55,13 +337,12 @@ async function handleRequest(req: Request): Promise<Response> {
 
   const cookieHeader = req.headers.get('cookie') || '';
   const cookies = parseCookies(cookieHeader);
-  const sessionId = cookies['session'];
+  const sessionId = cookies.session;
   const session = sessionId ? getSession(sessionId) : null;
+  const sessionUser = session ? await getUserById(session.userId) : null;
 
   if (path === '/health') {
-    return new Response(JSON.stringify({ status: 'ok' }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ status: 'ok' });
   }
 
   if (path === '/auth/login') {
@@ -79,17 +360,17 @@ async function handleRequest(req: Request): Promise<Response> {
     try {
       const token = await exchangeCodeForToken(code);
       const user = await findOrCreateUser(token);
-      const sessionId = createSession(user.id, token);
+      const newSessionId = createSession(user.id, token);
 
       return new Response('', {
         status: 302,
         headers: {
           'Location': '/',
-          'Set-Cookie': `session=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
+          'Set-Cookie': `session=${newSessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
         },
       });
     } catch (error) {
-      return new Response(`Auth error: ${error}`, { status: 500 });
+      return new Response(`Auth error: ${errorMessage(error)}`, { status: 500 });
     }
   }
 
@@ -107,130 +388,93 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   if (path === '/api/user' && method === 'GET') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!user) {
-      return new Response(JSON.stringify({ error: 'User not found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    return new Response(JSON.stringify(user), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse(toPublicUser(sessionUser));
   }
 
   if (path === '/api/deployments' && method === 'GET') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!user || !isUserAuthorized(user)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!isUserAuthorized(sessionUser)) {
+      return jsonResponse({ error: 'Forbidden' }, { status: 403 });
     }
 
     const deployments = await db.select().from(schema.deployments).orderBy(schema.deployments.createdAt);
-    return new Response(JSON.stringify(deployments), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    for (const deployment of deployments) {
+      await refreshReleaseMetadataWithoutDeploy(deployment);
+    }
+
+    const refreshedDeployments = await db.select().from(schema.deployments).orderBy(schema.deployments.createdAt);
+    return jsonResponse(refreshedDeployments.map(toPublicDeployment));
   }
 
   if (path === '/api/deployments' && method === 'POST') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!user || !isUserAuthorized(user)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!isUserAuthorized(sessionUser)) {
+      return jsonResponse({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const body = await req.json();
-    const { name, projectId, serviceId, environmentId, releaseTag, repo } = body;
+    const body = await req.json() as CreateDeploymentBody;
+    const { name, projectId, serviceId, environmentId, releaseTag, repo, autoDeploy } = body;
 
-    if (!name || !projectId || !serviceId || !repo || !releaseTag) {
-      return new Response(JSON.stringify({ error: 'Missing required fields: name, projectId, serviceId, repo, and releaseTag are all required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!name || !projectId || !serviceId || !repo) {
+      return jsonResponse(
+        { error: 'Missing required fields: name, projectId, serviceId, and repo are all required' },
+        { status: 400 }
+      );
     }
 
-    const token = await db
-      .select()
-      .from(schema.railwayTokens)
-      .where(eq(schema.railwayTokens.userId, user.id))
-      .then(r => r[0]?.token);
-
-    if (!token) {
-      return new Response(JSON.stringify({ error: 'No Railway token configured' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    const railwayToken = await getRailwayTokenForUser(sessionUser.id, projectId);
+    if (!railwayToken) {
+      return jsonResponse({ error: 'No Railway token configured' }, { status: 400 });
     }
 
-    // Validate that releaseTag is an actual GitHub release
+    let releaseResolution: ReleaseResolution;
     try {
-      const releases = await getGitHubReleases(session.githubToken, repo);
-      const isValidRelease = releases.some(r => r.tag_name === releaseTag);
-      if (!isValidRelease) {
-        return new Response(JSON.stringify({ error: `"${releaseTag}" is not a valid release tag for ${repo}` }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
+      releaseResolution = await resolveReleaseSelection(session.githubToken, repo, releaseTag);
     } catch (error) {
-      return new Response(JSON.stringify({ error: `Could not verify release tag: ${error}` }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      const message = errorMessage(error);
+      const status = message.includes('Failed to fetch') ? 502 : 400;
+      return jsonResponse({ error: message }, { status });
     }
 
     const [deployment] = await db
       .insert(schema.deployments)
       .values({
-        userId: user.id,
+        userId: sessionUser.id,
         name,
         projectId,
         serviceId,
         environmentId: environmentId || 'production',
-        releaseTag,
+        releaseTag: releaseResolution.selectedRelease.tag_name,
         repo,
-        railwayToken: token,
+        railwayToken,
         status: 'deploying',
+        autoDeploy: Boolean(autoDeploy),
+        trackedReleaseTag: releaseResolution.selectedRelease.tag_name,
+        lastObservedReleaseTag: releaseResolution.latestStableRelease.tag_name,
       })
       .returning();
 
     try {
-      const deploymentId = await deployToRailway(token, {
+      const deploymentId = await deployToRailway(railwayToken, {
         name,
         projectId,
         serviceId,
         environmentId,
-        releaseTag,
         repo,
+        branch: releaseResolution.repo.default_branch,
       });
 
-      await db
+      const [updatedDeployment] = await db
         .update(schema.deployments)
         .set({
           status: 'deployed',
@@ -238,156 +482,139 @@ async function handleRequest(req: Request): Promise<Response> {
           lastDeployedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(schema.deployments.id, deployment.id));
+        .where(eq(schema.deployments.id, deployment.id))
+        .returning();
 
-      return new Response(JSON.stringify({ ...deployment, deploymentId }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse(toPublicDeployment(updatedDeployment));
     } catch (error) {
       await db
         .update(schema.deployments)
         .set({ status: 'failed', updatedAt: new Date() })
         .where(eq(schema.deployments.id, deployment.id));
 
-      return new Response(JSON.stringify({ error: `Deployment failed: ${error}` }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return jsonResponse({ error: `Deployment failed: ${errorMessage(error)}` }, { status: 500 });
     }
   }
 
   if (path.startsWith('/api/deployments/') && path.endsWith('/redeploy') && method === 'POST') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!user || !isUserAuthorized(user)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!isUserAuthorized(sessionUser)) {
+      return jsonResponse({ error: 'Forbidden' }, { status: 403 });
     }
 
     const deploymentId = path.split('/')[3];
-    const deployment = await db.select().from(schema.deployments).where(eq(schema.deployments.id, deploymentId)).then(r => r[0]);
+    const deployment = await getDeploymentById(deploymentId);
 
     if (!deployment) {
-      return new Response(JSON.stringify({ error: 'Deployment not found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return jsonResponse({ error: 'Deployment not found' }, { status: 404 });
     }
 
+    if (!deployment.railwayToken) {
+      return jsonResponse({ error: 'Deployment is missing a Railway token' }, { status: 400 });
+    }
+
+    let releaseResolution: ReleaseResolution | null = null;
+
     try {
+      const owner = await getUserById(deployment.userId);
+      if (owner?.githubAccessToken) {
+        releaseResolution = await ensureDeploymentDefaultBranch(deployment, owner.githubAccessToken);
+      }
+
       const newDeploymentId = await redeployToRailway(
-        deployment.railwayToken!,
+        deployment.railwayToken,
         deployment.serviceId,
         deployment.environmentId || undefined
       );
 
-      await db
+      const trackedTag = releaseResolution?.latestStableRelease.tag_name
+        || deployment.trackedReleaseTag
+        || deployment.releaseTag
+        || null;
+
+      const [updatedDeployment] = await db
         .update(schema.deployments)
         .set({
           status: 'deployed',
           deploymentId: newDeploymentId,
+          releaseTag: trackedTag,
+          trackedReleaseTag: trackedTag,
+          lastObservedReleaseTag: releaseResolution?.latestStableRelease.tag_name || deployment.lastObservedReleaseTag,
           lastDeployedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(schema.deployments.id, deploymentId));
+        .where(eq(schema.deployments.id, deploymentId))
+        .returning();
 
-      return new Response(JSON.stringify({ success: true, deploymentId: newDeploymentId }), {
-        headers: { 'Content-Type': 'application/json' },
+      return jsonResponse({
+        success: true,
+        deploymentId: newDeploymentId,
+        deployment: toPublicDeployment(updatedDeployment),
       });
     } catch (error) {
-      return new Response(JSON.stringify({ error: `Redeploy failed: ${error}` }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      await db
+        .update(schema.deployments)
+        .set({ status: 'failed', updatedAt: new Date() })
+        .where(eq(schema.deployments.id, deploymentId));
+
+      return jsonResponse({ error: `Redeploy failed: ${errorMessage(error)}` }, { status: 500 });
     }
   }
 
   if (path === '/api/deployments' && method === 'DELETE') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!user || !isUserAuthorized(user)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!isUserAuthorized(sessionUser)) {
+      return jsonResponse({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const body = await req.json();
-    const { id } = body;
-
-    if (!id) {
-      return new Response(JSON.stringify({ error: 'Missing deployment ID' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    const body = await req.json() as DeleteDeploymentBody;
+    if (!body.id) {
+      return jsonResponse({ error: 'Missing deployment ID' }, { status: 400 });
     }
 
-    await db.delete(schema.deployments).where(eq(schema.deployments.id, id));
+    await db.delete(schema.deployments).where(eq(schema.deployments.id, body.id));
 
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   if (path === '/api/authorize' && method === 'POST') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!currentUser || !currentUser.isOwner) {
-      return new Response(JSON.stringify({ error: 'Only owner can authorize users' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!sessionUser.isOwner) {
+      return jsonResponse({ error: 'Only owner can authorize users' }, { status: 403 });
     }
 
-    const body = await req.json();
-    const { userId, authorized } = body;
+    const body = await req.json() as AuthorizeUserBody;
+    if (!body.userId || typeof body.authorized !== 'boolean') {
+      return jsonResponse({ error: 'Missing userId or authorized value' }, { status: 400 });
+    }
 
     await db
       .update(schema.users)
-      .set({ isAuthorized: authorized, updatedAt: new Date() })
-      .where(eq(schema.users.id, userId));
+      .set({ isAuthorized: body.authorized, updatedAt: new Date() })
+      .where(eq(schema.users.id, body.userId));
 
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   if (path === '/api/tokens' && method === 'POST') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const body = await req.json();
+    const body = await req.json() as SaveTokenBody;
     const { token, projectId, isDefault } = body;
 
     if (!token) {
-      return new Response(JSON.stringify({ error: 'Missing token' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return jsonResponse({ error: 'Missing token' }, { status: 400 });
     }
 
     if (isDefault) {
@@ -403,20 +630,15 @@ async function handleRequest(req: Request): Promise<Response> {
         userId: session.userId,
         token,
         projectId,
-        isDefault: isDefault || false,
+        isDefault: Boolean(isDefault),
       });
 
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   if (path === '/api/tokens' && method === 'GET') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const tokens = await db
@@ -424,104 +646,68 @@ async function handleRequest(req: Request): Promise<Response> {
       .from(schema.railwayTokens)
       .where(eq(schema.railwayTokens.userId, session.userId));
 
-    const maskedTokens = tokens.map(t => ({
-      id: t.id,
-      projectId: t.projectId,
-      isDefault: t.isDefault,
-      createdAt: t.createdAt,
-      token: t.token.substring(0, 8) + '****',
+    const maskedTokens = tokens.map(tokenRecord => ({
+      id: tokenRecord.id,
+      projectId: tokenRecord.projectId,
+      isDefault: tokenRecord.isDefault,
+      createdAt: tokenRecord.createdAt,
+      token: tokenRecord.token.substring(0, 8) + '****',
     }));
 
-    return new Response(JSON.stringify(maskedTokens), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse(maskedTokens);
   }
 
   if (path === '/api/releases' && method === 'GET') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const repo = url.searchParams.get('repo');
     if (!repo || !repo.includes('/')) {
-      return new Response(JSON.stringify({ error: 'Missing or invalid repo parameter (expected owner/repo)' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'Missing or invalid repo parameter (expected owner/repo)' }, { status: 400 });
     }
 
     try {
       const releases = await getGitHubReleases(session.githubToken, repo);
-      return new Response(JSON.stringify(releases), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse(sortReleasesNewestFirst(releases.filter(isStableRelease)));
     } catch (error) {
-      return new Response(JSON.stringify({ error: `Failed to fetch releases: ${error}` }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: `Failed to fetch releases: ${errorMessage(error)}` }, { status: 502 });
     }
   }
 
   // GET /api/repos - List user's GitHub repositories
   if (path === '/api/repos' && method === 'GET') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
     try {
       const repos = await getGitHubRepos(session.githubToken);
-      return new Response(JSON.stringify(repos), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse(repos);
     } catch (error) {
-      return new Response(JSON.stringify({ error: `Failed to fetch repositories: ${error}` }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: `Failed to fetch repositories: ${errorMessage(error)}` }, { status: 502 });
     }
   }
 
   // POST /api/collaborators/invite - Invite a collaborator by GitHub username
   if (path === '/api/collaborators/invite' && method === 'POST') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!currentUser || !currentUser.isOwner) {
-      return new Response(JSON.stringify({ error: 'Only owner can invite collaborators' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!sessionUser.isOwner) {
+      return jsonResponse({ error: 'Only owner can invite collaborators' }, { status: 403 });
     }
 
-    const body = await req.json();
-    const { username } = body;
-
-    if (!username) {
-      return new Response(JSON.stringify({ error: 'Missing username' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    const body = await req.json() as InviteCollaboratorBody;
+    if (!body.username) {
+      return jsonResponse({ error: 'Missing username' }, { status: 400 });
     }
 
     try {
-      const githubUser = await getGitHubUserByUsername(session.githubToken, username);
+      const githubUser = await getGitHubUserByUsername(session.githubToken, body.username);
       if (!githubUser) {
-        return new Response(JSON.stringify({ error: 'GitHub user not found' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return jsonResponse({ error: 'GitHub user not found' }, { status: 404 });
       }
 
       // Check if user already exists
@@ -529,23 +715,19 @@ async function handleRequest(req: Request): Promise<Response> {
         .select()
         .from(schema.users)
         .where(eq(schema.users.githubId, String(githubUser.id)))
-        .then(r => r[0]);
+        .then(rows => rows[0]);
 
       if (existingUser) {
         if (existingUser.isAuthorized) {
-          return new Response(JSON.stringify({ error: 'User is already a collaborator' }), {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-          });
+          return jsonResponse({ error: 'User is already a collaborator' }, { status: 400 });
         }
-        // Authorize existing user
-        await db
+
+        const [updatedUser] = await db
           .update(schema.users)
           .set({ isAuthorized: true, updatedAt: new Date() })
-          .where(eq(schema.users.id, existingUser.id));
-        return new Response(JSON.stringify({ success: true, user: existingUser }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
+          .where(eq(schema.users.id, existingUser.id))
+          .returning();
+        return jsonResponse({ success: true, user: toPublicUser(updatedUser) });
       }
 
       // Create new user as collaborator
@@ -560,134 +742,87 @@ async function handleRequest(req: Request): Promise<Response> {
         })
         .returning();
 
-      return new Response(JSON.stringify({ success: true, user: newUser }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ success: true, user: toPublicUser(newUser) });
     } catch (error) {
-      return new Response(JSON.stringify({ error: `Failed to invite collaborator: ${error}` }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: `Failed to invite collaborator: ${errorMessage(error)}` }, { status: 500 });
     }
   }
 
   // GET /api/collaborators - List all collaborators
   if (path === '/api/collaborators' && method === 'GET') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!currentUser || (!currentUser.isOwner && !currentUser.isAuthorized)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!sessionUser.isOwner && !sessionUser.isAuthorized) {
+      return jsonResponse({ error: 'Forbidden' }, { status: 403 });
     }
 
     const users = await db.select().from(schema.users);
-    return new Response(JSON.stringify(users), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse(users.map(toPublicUser));
   }
 
   // DELETE /api/collaborators/:id - Remove a collaborator
   if (path.startsWith('/api/collaborators/') && method === 'DELETE') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!currentUser || !currentUser.isOwner) {
-      return new Response(JSON.stringify({ error: 'Only owner can remove collaborators' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!sessionUser.isOwner) {
+      return jsonResponse({ error: 'Only owner can remove collaborators' }, { status: 403 });
     }
 
     const collaboratorId = path.split('/')[3];
-
-    const collaborator = await db.select().from(schema.users).where(eq(schema.users.id, collaboratorId)).then(r => r[0]);
+    const collaborator = await getUserById(collaboratorId);
     if (!collaborator) {
-      return new Response(JSON.stringify({ error: 'Collaborator not found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'Collaborator not found' }, { status: 404 });
     }
 
     if (collaborator.isOwner) {
-      return new Response(JSON.stringify({ error: 'Cannot remove the owner' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'Cannot remove the owner' }, { status: 400 });
     }
 
     await db.delete(schema.users).where(eq(schema.users.id, collaboratorId));
-
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   // POST /api/deployments/:id/domain - Add custom domain to deployment
   if (path.match(/^\/api\/deployments\/[^/]+\/domain$/) && method === 'POST') {
-    if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
-    if (!currentUser || !isUserAuthorized(currentUser)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!isUserAuthorized(sessionUser)) {
+      return jsonResponse({ error: 'Forbidden' }, { status: 403 });
     }
 
     const deploymentId = path.split('/')[3];
-    const deployment = await db.select().from(schema.deployments).where(eq(schema.deployments.id, deploymentId)).then(r => r[0]);
+    const deployment = await getDeploymentById(deploymentId);
 
     if (!deployment) {
-      return new Response(JSON.stringify({ error: 'Deployment not found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'Deployment not found' }, { status: 404 });
     }
 
-    const body = await req.json();
-    const { domain } = body;
+    if (!deployment.railwayToken) {
+      return jsonResponse({ error: 'Deployment is missing a Railway token' }, { status: 400 });
+    }
 
-    if (!domain) {
-      return new Response(JSON.stringify({ error: 'Missing domain' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    const body = await req.json() as AddDomainBody;
+    if (!body.domain) {
+      return jsonResponse({ error: 'Missing domain' }, { status: 400 });
     }
 
     try {
-      await addCustomDomain(deployment.railwayToken!, deployment.serviceId, domain);
+      await addCustomDomain(deployment.railwayToken, deployment.serviceId, body.domain);
 
       await db
         .update(schema.deployments)
-        .set({ customDomain: domain, updatedAt: new Date() })
+        .set({ customDomain: body.domain, updatedAt: new Date() })
         .where(eq(schema.deployments.id, deploymentId));
 
-      return new Response(JSON.stringify({ success: true, domain }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ success: true, domain: body.domain });
     } catch (error) {
-      return new Response(JSON.stringify({ error: `Failed to add domain: ${error}` }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: `Failed to add domain: ${errorMessage(error)}` }, { status: 500 });
     }
   }
 
@@ -946,6 +1081,25 @@ async function handleRequest(req: Request): Promise<Response> {
       margin-right: 12px;
     }
 
+    .meta-pill {
+      display: inline-block;
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      font-size: 10px;
+      margin-right: 8px;
+      margin-top: 4px;
+    }
+
+    .meta-pill.success {
+      border-color: var(--success);
+      color: var(--success);
+    }
+
+    .meta-pill.warning {
+      border-color: var(--warning);
+      color: var(--warning);
+    }
+
     .status {
       font-size: 10px;
       padding: 4px 8px;
@@ -1117,6 +1271,19 @@ async function handleRequest(req: Request): Promise<Response> {
       font-family: monospace;
       color: var(--text-muted);
     }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .checkbox-row input {
+      width: auto;
+      accent-color: var(--accent);
+    }
   </style>
 </head>
 <body>
@@ -1134,7 +1301,7 @@ async function handleRequest(req: Request): Promise<Response> {
 
     <div class="nav">
       <button class="active" data-tab="deploy">deployments</button>
-      <button id="collabTab" style="display:none;">team</button>
+      <button id="collabTab" data-tab="collab" style="display:none;">team</button>
       <button data-tab="settings">settings</button>
     </div>
 
@@ -1166,10 +1333,16 @@ async function handleRequest(req: Request): Promise<Response> {
             </div>
           </div>
           <div class="form-group">
-            <label>release <span>*</span></label>
-            <select id="releaseSelect" name="releaseTag" required disabled>
+            <label>release</label>
+            <select id="releaseSelect" name="releaseTag" disabled>
               <option value="">— select repo —</option>
             </select>
+          </div>
+          <div class="form-group full">
+            <label class="checkbox-row">
+              <input type="checkbox" id="autoDeployInput" name="autoDeploy">
+              <span>auto deploy when a newer stable release is published</span>
+            </label>
           </div>
           <div class="form-group full" style="margin-top:8px;">
             <button type="submit" class="btn-primary">deploy</button>
@@ -1260,7 +1433,18 @@ async function handleRequest(req: Request): Promise<Response> {
 
     async function loadDeployments() {
       const res = await fetch('/api/deployments');
-      const data = await res.json();
+      const data = (await res.json()).map(d => {
+        const trackedRelease = d.trackedReleaseTag || d.releaseTag || '--';
+        const latestRelease = d.lastObservedReleaseTag && d.lastObservedReleaseTag !== trackedRelease
+          ? ' | latest ' + d.lastObservedReleaseTag
+          : '';
+        const autoState = d.autoDeploy ? ' | auto' : '';
+        return {
+          ...d,
+          repo: d.repo || '--',
+          releaseTag: 'tracked ' + trackedRelease + latestRelease + autoState,
+        };
+      });
       const list = document.getElementById('deployList');
       
       if (!data.length) {
@@ -1353,6 +1537,7 @@ async function handleRequest(req: Request): Promise<Response> {
         if (!data.length) { sel.innerHTML = '<option value="">— no releases —</option>'; sel.disabled = true; return; }
         sel.innerHTML = data.map(r => \`<option value="\${r.tag_name}">\${r.name || r.tag_name}</option>\`).join('');
         sel.disabled = false;
+        sel.value = data[0].tag_name;
       }, 400);
     }
 
@@ -1475,15 +1660,21 @@ async function handleRequest(req: Request): Promise<Response> {
         projectId: f.projectId.value,
         serviceId: f.serviceId.value,
         environmentId: f.environmentId.value,
-        releaseTag: f.releaseTag.value,
-        repo: f.repo.value
+        releaseTag: f.releaseTag.value || undefined,
+        repo: f.repo.value,
+        autoDeploy: f.autoDeploy.checked
       };
       const res = await fetch('/api/deployments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(d)
       });
-      if (res.ok) { showToast('deploying'); f.reset(); loadDeployments(); }
+      if (res.ok) {
+        showToast('deploying');
+        f.reset();
+        document.getElementById('releaseSelect').disabled = true;
+        loadDeployments();
+      }
       else { const err = await res.json(); showToast(err.error || 'error', true); }
     });
 
@@ -1533,6 +1724,7 @@ async function handleRequest(req: Request): Promise<Response> {
 }
 
 await runMigrations();
+startReleaseWatcher();
 
 const server = Bun.serve({
   port: PORT,

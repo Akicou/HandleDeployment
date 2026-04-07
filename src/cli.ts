@@ -58,8 +58,8 @@ async function deploy(options: CliArgs['options']) {
       projectId: options.project,
       serviceId: options.service,
       environmentId: options.environment,
-      branch: options.branch,
       repo: options.repo,
+      branch: options.branch,
     });
     
     console.log(`Deployment triggered! ID: ${deploymentId}`);
@@ -137,8 +137,8 @@ Options:
   --project      Railway project ID
   --service      Railway service ID
   --environment  Railway environment ID (default: production)
-  --branch       Git branch to deploy
-  --repo         GitHub repository (format: username/repo)
+  --branch       Git branch to connect before deploy
+  --repo         GitHub repository for branch connection (format: username/repo)
 
 Examples:
   railway-deploy deploy --project proj_xxx --service svc_xxx --branch main
