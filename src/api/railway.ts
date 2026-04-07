@@ -30,12 +30,16 @@ export interface DeploymentConfig {
 export class RailwayClient {
   constructor(private readonly token: string) {}
 
-  private async query<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  private async executeQuery<T>(
+    query: string,
+    variables: Record<string, unknown>,
+    headers: Record<string, string>
+  ): Promise<T> {
     const response = await fetch(RAILWAY_GRAPHQL_ENDPOINT, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.token}`,
         'Content-Type': 'application/json',
+        ...headers,
       },
       body: JSON.stringify({ query, variables }),
     });
@@ -51,6 +55,27 @@ export class RailwayClient {
     }
 
     return result.data;
+  }
+
+  private isAuthError(error: unknown): boolean {
+    return error instanceof Error
+      && (error.message === 'Not Authorized' || error.message.toLowerCase().includes('unauthorized'));
+  }
+
+  private async query<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+    try {
+      return await this.executeQuery<T>(query, variables, {
+        Authorization: `Bearer ${this.token}`,
+      });
+    } catch (error) {
+      if (!this.isAuthError(error)) {
+        throw error;
+      }
+
+      return this.executeQuery<T>(query, variables, {
+        'Project-Access-Token': this.token,
+      });
+    }
   }
 
   async getService(serviceId: string): Promise<ServiceRecord> {
