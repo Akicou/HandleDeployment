@@ -1,0 +1,62 @@
+import { db } from './index';
+import { sql } from 'drizzle-orm';
+import { readFileSync } from 'fs';
+
+async function migrate() {
+  console.log('Running migrations...');
+  
+  try {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        github_id VARCHAR(255) NOT NULL UNIQUE,
+        username VARCHAR(255) NOT NULL,
+        email VARCHAR(255),
+        avatar_url TEXT,
+        is_owner BOOLEAN DEFAULT false,
+        is_authorized BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+    `);
+    
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS deployments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id),
+        name VARCHAR(255) NOT NULL,
+        project_id VARCHAR(255) NOT NULL,
+        service_id VARCHAR(255) NOT NULL,
+        environment_id VARCHAR(255),
+        branch VARCHAR(255) DEFAULT 'main',
+        repo VARCHAR(255),
+        railway_token TEXT,
+        status VARCHAR(50) DEFAULT 'pending',
+        deployment_id VARCHAR(255),
+        last_deployed_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+    `);
+    
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS railway_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id),
+        project_id VARCHAR(255),
+        token TEXT NOT NULL,
+        is_default BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+    `);
+    
+    console.log('Migrations complete!');
+  } catch (error) {
+    console.error('Migration failed:', error);
+    process.exit(1);
+  }
+  
+  process.exit(0);
+}
+
+migrate();
