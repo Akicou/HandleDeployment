@@ -73,19 +73,28 @@ export class RailwayClient {
     const query = `
       query project($id: String!) {
         project(id: $id) {
-          id
-          services {
-            id
-            name
+          services(first: 100) {
+            edges {
+              node {
+                id
+                name
+              }
+            }
           }
         }
       }
     `;
-    const result = await this.query<{ project: { services: ProjectServiceRecord[] } | null }>(query, { id: projectId });
+    const result = await this.query<{
+      project: {
+        services: {
+          edges: Array<{ node: ProjectServiceRecord }>;
+        };
+      } | null;
+    }>(query, { id: projectId });
     if (!result.project) {
       throw new Error(`Project ${projectId} not found`);
     }
-    return result.project.services;
+    return result.project.services.edges.map((edge) => edge.node);
   }
 
   async getServiceInstance(serviceId: string, environmentId: string): Promise<unknown> {

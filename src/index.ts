@@ -390,6 +390,67 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   if (path === '/auth/login') {
+    const loginHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Railway Deployer Login</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fafafa;
+      color: #0a0a0a;
+      font-family: 'JetBrains Mono', monospace;
+      padding: 24px;
+    }
+    .card {
+      width: min(420px, 100%);
+      background: #ffffff;
+      border: 1px solid #e0e0e0;
+      padding: 32px;
+    }
+    h1 {
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    p {
+      font-size: 12px;
+      color: #666666;
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+    a {
+      display: inline-block;
+      width: 100%;
+      padding: 12px 16px;
+      text-align: center;
+      background: #0a0a0a;
+      color: #ffffff;
+      text-decoration: none;
+      border: 1px solid #0a0a0a;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>railway/deployer</h1>
+    <p>Sign in with GitHub to manage Railway deployments.</p>
+    <a href="/auth/start">continue with github</a>
+  </div>
+</body>
+</html>`;
+    return new Response(loginHtml, {
+      headers: { 'Content-Type': 'text/html' },
+    });
+  }
+
+  if (path === '/auth/start') {
     const state = generateState();
     const authUrl = getGitHubAuthUrl(state);
     return Response.redirect(authUrl);
