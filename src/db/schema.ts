@@ -24,6 +24,7 @@ export const deployments = pgTable('deployments', {
   railwayToken: text('railway_token'),
   status: varchar('status', { length: 50 }).default('pending'),
   deploymentId: varchar('deployment_id', { length: 255 }),
+  customDomain: varchar('custom_domain', { length: 255 }),
   lastDeployedAt: timestamp('last_deployed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

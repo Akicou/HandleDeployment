@@ -10,7 +10,7 @@ export function getGitHubAuthUrl(state: string): string {
   const params = new URLSearchParams({
     client_id: GITHUB_CLIENT_ID,
     redirect_uri: GITHUB_CALLBACK_URL,
-    scope: 'read:user user:email',
+    scope: 'read:user user:email repo',
     state,
   });
   return `https://github.com/login/oauth/authorize?${params.toString()}`;
@@ -140,6 +140,48 @@ export async function getGitHubReleases(
 
   if (!response.ok) {
     throw new Error(`Failed to fetch releases for ${repo}: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function getGitHubRepos(accessToken: string): Promise<Array<{
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  owner: { login: string };
+  description: string | null;
+  default_branch: string;
+}>> {
+  const response = await fetch('https://api.github.com/user/repos?sort=updated&per_page=100', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/vnd.github+json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch repositories: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function getGitHubUserByUsername(accessToken: string, username: string): Promise<{
+  id: number;
+  login: string;
+  avatar_url?: string;
+} | null> {
+  const response = await fetch(`https://api.github.com/users/${username}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/vnd.github+json',
+    },
+  });
+
+  if (!response.ok) {
+    return null;
   }
 
   return response.json();

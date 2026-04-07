@@ -200,3 +200,15 @@ export async function changeBranch(token: string, serviceId: string, repo: strin
   const client = new RailwayClient(token);
   await client.connectService(serviceId, repo, branch);
 }
+
+export async function addCustomDomain(token: string, serviceId: string, domain: string): Promise<void> {
+  const client = new RailwayClient(token);
+  const query = `
+    mutation serviceInstanceAddDomain($serviceId: String!, $domain: String!) {
+      serviceInstanceAddDomain(serviceId: $serviceId, domain: $domain) {
+        id
+      }
+    }
+  `;
+  await client.query<{ serviceInstanceAddDomain: { id: string } }>(query, { serviceId, domain });
+}
