@@ -38,7 +38,7 @@ export async function exchangeCodeForToken(code: string): Promise<string> {
 }
 
 export async function getGitHubUser(accessToken: string): Promise<{
-  id: string;
+  id: number;
   login: string;
   email?: string;
   avatar_url?: string;
@@ -85,7 +85,7 @@ export async function findOrCreateUser(accessToken: string): Promise<User> {
   const existingUser = await db
     .select()
     .from(schema.users)
-    .where(eq(schema.users.githubId, githubUser.id))
+    .where(eq(schema.users.githubId, String(githubUser.id)))
     .then(res => res[0]);
 
   if (existingUser) {
@@ -107,7 +107,7 @@ export async function findOrCreateUser(accessToken: string): Promise<User> {
   const [newUser] = await db
     .insert(schema.users)
     .values({
-      githubId: githubUser.id,
+      githubId: String(githubUser.id),
       username: githubUser.login,
       email,
       avatarUrl: githubUser.avatar_url,
@@ -124,5 +124,23 @@ export function generateState(): string {
 }
 
 export function isUserAuthorized(user: User): boolean {
-  return user.isAuthorized || user.isOwner;
+  return user.isAuthorized || user.isOwner || false;
+}
+
+export async function getGitHubReleases(
+  accessToken: string,
+  repo: string
+): Promise<Array<{ tag_name: string; name: string; published_at: string }>> {
+  const response = await fetch(`https://api.github.com/repos/${repo}/releases`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/vnd.github+json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch releases for ${repo}: ${response.status}`);
+  }
+
+  return response.json();
 }

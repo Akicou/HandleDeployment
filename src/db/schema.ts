@@ -19,7 +19,7 @@ export const deployments = pgTable('deployments', {
   projectId: varchar('project_id', { length: 255 }).notNull(),
   serviceId: varchar('service_id', { length: 255 }).notNull(),
   environmentId: varchar('environment_id', { length: 255 }),
-  branch: varchar('branch', { length: 255 }).default('main'),
+  releaseTag: varchar('release_tag', { length: 255 }),
   repo: varchar('repo', { length: 255 }),
   railwayToken: text('railway_token'),
   status: varchar('status', { length: 50 }).default('pending'),

@@ -1,19 +1,21 @@
 import { db, schema } from './db';
 import { RailwayClient, deployToRailway, redeployToRailway } from './api/railway';
-import { 
-  getGitHubAuthUrl, 
-  exchangeCodeForToken, 
-  findOrCreateUser, 
+import {
+  getGitHubAuthUrl,
+  exchangeCodeForToken,
+  findOrCreateUser,
   generateState,
-  isUserAuthorized 
+  isUserAuthorized,
+  getGitHubReleases,
 } from './auth/github';
+import { runMigrations } from './db/migrate';
 import { eq } from 'drizzle-orm';
 
 const PORT = parseInt(process.env.PORT || '3000');
-const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
 
 interface Session {
   userId: string;
+  githubToken: string;
   createdAt: Date;
 }
 
@@ -23,9 +25,9 @@ function generateSessionId(): string {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 }
 
-function createSession(userId: string): string {
+function createSession(userId: string, githubToken: string): string {
   const sessionId = generateSessionId();
-  sessions.set(sessionId, { userId, createdAt: new Date() });
+  sessions.set(sessionId, { userId, githubToken, createdAt: new Date() });
   return sessionId;
 }
 
@@ -75,8 +77,8 @@ async function handleRequest(req: Request): Promise<Response> {
     try {
       const token = await exchangeCodeForToken(code);
       const user = await findOrCreateUser(token);
-      const sessionId = createSession(user.id);
-      
+      const sessionId = createSession(user.id, token);
+
       return new Response('', {
         status: 302,
         headers: {
@@ -104,20 +106,20 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (path === '/api/user' && method === 'GET') {
     if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
-        status: 401, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
     if (!user) {
-      return new Response(JSON.stringify({ error: 'User not found' }), { 
-        status: 404, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'User not found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     return new Response(JSON.stringify(user), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -125,20 +127,20 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (path === '/api/deployments' && method === 'GET') {
     if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
-        status: 401, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
     if (!user || !isUserAuthorized(user)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), { 
-        status: 403, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Forbidden' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const deployments = await db.select().from(schema.deployments).orderBy(schema.deployments.createdAt);
     return new Response(JSON.stringify(deployments), {
       headers: { 'Content-Type': 'application/json' },
@@ -147,27 +149,27 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (path === '/api/deployments' && method === 'POST') {
     if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
-        status: 401, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
     if (!user || !isUserAuthorized(user)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), { 
-        status: 403, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Forbidden' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const body = await req.json();
-    const { name, projectId, serviceId, environmentId, branch, repo } = body;
-    
-    if (!name || !projectId || !serviceId) {
-      return new Response(JSON.stringify({ error: 'Missing required fields' }), { 
-        status: 400, 
-        headers: { 'Content-Type': 'application/json' } 
+    const { name, projectId, serviceId, environmentId, releaseTag, repo } = body;
+
+    if (!name || !projectId || !serviceId || !repo || !releaseTag) {
+      return new Response(JSON.stringify({ error: 'Missing required fields: name, projectId, serviceId, repo, and releaseTag are all required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
 
@@ -178,9 +180,26 @@ async function handleRequest(req: Request): Promise<Response> {
       .then(r => r[0]?.token);
 
     if (!token) {
-      return new Response(JSON.stringify({ error: 'No Railway token configured' }), { 
-        status: 400, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'No Railway token configured' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Validate that releaseTag is an actual GitHub release
+    try {
+      const releases = await getGitHubReleases(session.githubToken, repo);
+      const isValidRelease = releases.some(r => r.tag_name === releaseTag);
+      if (!isValidRelease) {
+        return new Response(JSON.stringify({ error: `"${releaseTag}" is not a valid release tag for ${repo}` }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (error) {
+      return new Response(JSON.stringify({ error: `Could not verify release tag: ${error}` }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -192,7 +211,7 @@ async function handleRequest(req: Request): Promise<Response> {
         projectId,
         serviceId,
         environmentId: environmentId || 'production',
-        branch: branch || 'main',
+        releaseTag,
         repo,
         railwayToken: token,
         status: 'deploying',
@@ -205,20 +224,20 @@ async function handleRequest(req: Request): Promise<Response> {
         projectId,
         serviceId,
         environmentId,
-        branch,
+        releaseTag,
         repo,
       });
-      
+
       await db
         .update(schema.deployments)
-        .set({ 
-          status: 'deployed', 
+        .set({
+          status: 'deployed',
           deploymentId,
           lastDeployedAt: new Date(),
           updatedAt: new Date(),
         })
         .where(eq(schema.deployments.id, deployment.id));
-      
+
       return new Response(JSON.stringify({ ...deployment, deploymentId }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -227,96 +246,96 @@ async function handleRequest(req: Request): Promise<Response> {
         .update(schema.deployments)
         .set({ status: 'failed', updatedAt: new Date() })
         .where(eq(schema.deployments.id, deployment.id));
-      
-      return new Response(JSON.stringify({ error: `Deployment failed: ${error}` }), { 
-        status: 500, 
-        headers: { 'Content-Type': 'application/json' } 
+
+      return new Response(JSON.stringify({ error: `Deployment failed: ${error}` }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
   }
 
   if (path.startsWith('/api/deployments/') && path.endsWith('/redeploy') && method === 'POST') {
     if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
-        status: 401, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
     if (!user || !isUserAuthorized(user)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), { 
-        status: 403, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Forbidden' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const deploymentId = path.split('/')[3];
     const deployment = await db.select().from(schema.deployments).where(eq(schema.deployments.id, deploymentId)).then(r => r[0]);
-    
+
     if (!deployment) {
-      return new Response(JSON.stringify({ error: 'Deployment not found' }), { 
-        status: 404, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Deployment not found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     try {
       const newDeploymentId = await redeployToRailway(
         deployment.railwayToken!,
         deployment.serviceId,
         deployment.environmentId || undefined
       );
-      
+
       await db
         .update(schema.deployments)
-        .set({ 
+        .set({
           status: 'deployed',
           deploymentId: newDeploymentId,
           lastDeployedAt: new Date(),
           updatedAt: new Date(),
         })
         .where(eq(schema.deployments.id, deploymentId));
-      
+
       return new Response(JSON.stringify({ success: true, deploymentId: newDeploymentId }), {
         headers: { 'Content-Type': 'application/json' },
       });
     } catch (error) {
-      return new Response(JSON.stringify({ error: `Redeploy failed: ${error}` }), { 
-        status: 500, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: `Redeploy failed: ${error}` }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
   }
 
   if (path === '/api/deployments' && method === 'DELETE') {
     if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
-        status: 401, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const user = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
     if (!user || !isUserAuthorized(user)) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), { 
-        status: 403, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Forbidden' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const body = await req.json();
     const { id } = body;
-    
+
     if (!id) {
-      return new Response(JSON.stringify({ error: 'Missing deployment ID' }), { 
-        status: 400, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Missing deployment ID' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     await db.delete(schema.deployments).where(eq(schema.deployments.id, id));
-    
+
     return new Response(JSON.stringify({ success: true }), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -324,28 +343,28 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (path === '/api/authorize' && method === 'POST') {
     if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
-        status: 401, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const currentUser = await db.select().from(schema.users).where(eq(schema.users.id, session.userId)).then(r => r[0]);
     if (!currentUser || !currentUser.isOwner) {
-      return new Response(JSON.stringify({ error: 'Only owner can authorize users' }), { 
-        status: 403, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Only owner can authorize users' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const body = await req.json();
     const { userId, authorized } = body;
-    
+
     await db
       .update(schema.users)
       .set({ isAuthorized: authorized, updatedAt: new Date() })
       .where(eq(schema.users.id, userId));
-    
+
     return new Response(JSON.stringify({ success: true }), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -353,29 +372,29 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (path === '/api/tokens' && method === 'POST') {
     if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
-        status: 401, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const body = await req.json();
     const { token, projectId, isDefault } = body;
-    
+
     if (!token) {
-      return new Response(JSON.stringify({ error: 'Missing token' }), { 
-        status: 400, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Missing token' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     if (isDefault) {
       await db
         .update(schema.railwayTokens)
         .set({ isDefault: false })
         .where(eq(schema.railwayTokens.userId, session.userId));
     }
-    
+
     await db
       .insert(schema.railwayTokens)
       .values({
@@ -384,7 +403,7 @@ async function handleRequest(req: Request): Promise<Response> {
         projectId,
         isDefault: isDefault || false,
       });
-    
+
     return new Response(JSON.stringify({ success: true }), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -392,17 +411,17 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (path === '/api/tokens' && method === 'GET') {
     if (!session) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
-        status: 401, 
-        headers: { 'Content-Type': 'application/json' } 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     const tokens = await db
       .select()
       .from(schema.railwayTokens)
       .where(eq(schema.railwayTokens.userId, session.userId));
-    
+
     const maskedTokens = tokens.map(t => ({
       id: t.id,
       projectId: t.projectId,
@@ -410,10 +429,39 @@ async function handleRequest(req: Request): Promise<Response> {
       createdAt: t.createdAt,
       token: t.token.substring(0, 8) + '****',
     }));
-    
+
     return new Response(JSON.stringify(maskedTokens), {
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  if (path === '/api/releases' && method === 'GET') {
+    if (!session) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const repo = url.searchParams.get('repo');
+    if (!repo || !repo.includes('/')) {
+      return new Response(JSON.stringify({ error: 'Missing or invalid repo parameter (expected owner/repo)' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    try {
+      const releases = await getGitHubReleases(session.githubToken, repo);
+      return new Response(JSON.stringify(releases), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({ error: `Failed to fetch releases: ${error}` }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
   }
 
   const html = `<!DOCTYPE html>
@@ -422,104 +470,100 @@ async function handleRequest(req: Request): Promise<Response> {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Railway Deployer</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-    header { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    h1 { color: #1a1a1a; margin-bottom: 10px; }
-    .nav { display: flex; gap: 15px; margin-top: 15px; }
-    .nav a { color: #0066cc; text-decoration: none; }
-    .card { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .btn { display: inline-block; padding: 10px 20px; background: #0066cc; color: #fff; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; }
-    .btn:hover { background: #0052a3; }
-    .btn-danger { background: #dc3545; }
-    .btn-danger:hover { background: #c82333; }
-    .btn-success { background: #28a745; }
-    .btn-success:hover { background: #218838; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
-    th { background: #f8f9fa; font-weight: 600; }
-    .status { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-    .status-pending { background: #fff3cd; color: #856404; }
-    .status-deploying { background: #cce5ff; color: #004085; }
-    .status-deployed { background: #d4edda; color: #155724; }
-    .status-failed { background: #f8d7da; color: #721c24; }
-    form { margin-bottom: 20px; }
-    .form-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 5px; font-weight: 600; }
-    input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; }
-    .user-info { display: flex; align-items: center; gap: 10px; }
-    .avatar { width: 32px; height: 32px; border-radius: 50%; }
-    .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; }
-    .badge-owner { background: #ffc107; color: #000; }
-    .badge-authorized { background: #28a745; color: #fff; }
-    .badge-pending { background: #6c757d; color: #fff; }
-  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-  <div class="container">
-    <header>
-      <h1>Railway Deployer</h1>
-      <p>Deploy and manage your Railway apps with git branch/commit support</p>
-      <div class="nav">
-        <a href="/">Deployments</a>
-        <a href="/settings">Settings</a>
-        <a href="/auth/logout">Logout</a>
+<body class="bg-gray-50 min-h-screen text-gray-900">
+  <div class="max-w-5xl mx-auto px-4 py-8">
+
+    <header class="mb-8">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-semibold tracking-tight">Railway Deployer</h1>
+          <p class="text-sm text-gray-500 mt-1">Deploy and manage your Railway apps from GitHub releases</p>
+        </div>
+        <nav class="flex items-center gap-4 text-sm">
+          <a href="/" class="text-gray-600 hover:text-gray-900 transition-colors">Deployments</a>
+          <a href="/auth/logout" class="text-gray-600 hover:text-gray-900 transition-colors">Logout</a>
+        </nav>
       </div>
     </header>
-    
-    <div class="card">
-      <h2>Add New Deployment</h2>
-      <form id="deployForm">
-        <div class="form-group">
-          <label>Name</label>
-          <input type="text" name="name" required placeholder="my-app">
+
+    <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-6">
+      <h2 class="text-base font-semibold mb-5">New Deployment</h2>
+      <form id="deployForm" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Name <span class="text-red-500">*</span></label>
+          <input type="text" name="name" required placeholder="my-app"
+            class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition">
         </div>
-        <div class="form-group">
-          <label>Project ID</label>
-          <input type="text" name="projectId" required placeholder="proj_xxx">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Project ID <span class="text-red-500">*</span></label>
+          <input type="text" name="projectId" required placeholder="proj_xxx"
+            class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition">
         </div>
-        <div class="form-group">
-          <label>Service ID</label>
-          <input type="text" name="serviceId" required placeholder="svc_xxx">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Service ID <span class="text-red-500">*</span></label>
+          <input type="text" name="serviceId" required placeholder="svc_xxx"
+            class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition">
         </div>
-        <div class="form-group">
-          <label>Environment ID (optional)</label>
-          <input type="text" name="environmentId" placeholder="env_xxx">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Environment ID</label>
+          <input type="text" name="environmentId" placeholder="env_xxx (defaults to production)"
+            class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition">
         </div>
-        <div class="form-group">
-          <label>Git Branch (optional)</label>
-          <input type="text" name="branch" placeholder="main">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Repository <span class="text-red-500">*</span></label>
+          <input type="text" id="repoInput" name="repo" required placeholder="owner/repo"
+            class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+            oninput="debouncedFetchReleases(this.value)">
         </div>
-        <div class="form-group">
-          <label>Repository (optional)</label>
-          <input type="text" name="repo" placeholder="username/repo">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Release <span class="text-red-500">*</span></label>
+          <select id="releaseSelect" name="releaseTag" required disabled
+            class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition bg-white disabled:bg-gray-50 disabled:text-gray-400">
+            <option value="">— enter a repo first —</option>
+          </select>
+          <p id="releaseStatus" class="mt-1 text-xs text-gray-400"></p>
         </div>
-        <button type="submit" class="btn">Deploy</button>
+        <div class="sm:col-span-2 pt-1">
+          <button type="submit"
+            class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+            Deploy
+          </button>
+        </div>
       </form>
     </div>
-    
-    <div class="card">
-      <h2>Active Deployments</h2>
-      <table id="deploymentsTable">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Branch</th>
-            <th>Status</th>
-            <th>Last Deployed</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="deploymentsBody">
-          <tr><td colspan="5">Loading...</td></tr>
-        </tbody>
-      </table>
+
+    <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+      <h2 class="text-base font-semibold mb-5">Active Deployments</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-gray-100">
+              <th class="text-left text-xs font-medium text-gray-500 pb-3 pr-4">Name</th>
+              <th class="text-left text-xs font-medium text-gray-500 pb-3 pr-4">Release</th>
+              <th class="text-left text-xs font-medium text-gray-500 pb-3 pr-4">Status</th>
+              <th class="text-left text-xs font-medium text-gray-500 pb-3 pr-4">Last Deployed</th>
+              <th class="text-left text-xs font-medium text-gray-500 pb-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="deploymentsBody">
+            <tr><td colspan="5" class="py-8 text-center text-gray-400 text-sm">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
+
   </div>
-  
+
   <script>
+    const statusClasses = {
+      pending:   'bg-yellow-50 text-yellow-700 border border-yellow-200',
+      deploying: 'bg-blue-50 text-blue-700 border border-blue-200',
+      deployed:  'bg-green-50 text-green-700 border border-green-200',
+      failed:    'bg-red-50 text-red-700 border border-red-200',
+    };
+
     async function loadUser() {
       const res = await fetch('/api/user');
       if (!res.ok) {
@@ -528,36 +572,54 @@ async function handleRequest(req: Request): Promise<Response> {
       }
       return res.json();
     }
-    
+
     async function loadDeployments() {
       const res = await fetch('/api/deployments');
       const data = await res.json();
       const tbody = document.getElementById('deploymentsBody');
-      
-      if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5">No deployments yet</td></tr>';
+
+      if (!data.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="py-8 text-center text-gray-400 text-sm">No deployments yet</td></tr>';
         return;
       }
-      
+
       tbody.innerHTML = data.map(d => \`
-        <tr>
-          <td>\${d.name}</td>
-          <td>\${d.branch || 'main'}</td>
-          <td><span class="status status-\${d.status}">\${d.status}</span></td>
-          <td>\${d.lastDeployedAt ? new Date(d.lastDeployedAt).toLocaleString() : 'Never'}</td>
-          <td>
-            <button onclick="redeploy('\${d.id}')" class="btn btn-success">Redeploy</button>
-            <button onclick="deleteDeployment('\${d.id}')" class="btn btn-danger">Delete</button>
+        <tr class="border-b border-gray-50 last:border-0">
+          <td class="py-3 pr-4 font-medium">\${d.name}</td>
+          <td class="py-3 pr-4">
+            <code class="text-xs bg-gray-100 px-2 py-0.5 rounded">\${d.releaseTag || '—'}</code>
+          </td>
+          <td class="py-3 pr-4">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium \${statusClasses[d.status] || statusClasses.pending}">
+              \${d.status}
+            </span>
+          </td>
+          <td class="py-3 pr-4 text-gray-500">\${d.lastDeployedAt ? new Date(d.lastDeployedAt).toLocaleString() : 'Never'}</td>
+          <td class="py-3">
+            <div class="flex gap-2">
+              <button onclick="redeploy('\${d.id}')"
+                class="px-3 py-1 text-xs font-medium bg-green-600 hover:bg-green-700 text-white rounded-md transition-colors">
+                Redeploy
+              </button>
+              <button onclick="deleteDeployment('\${d.id}')"
+                class="px-3 py-1 text-xs font-medium bg-white hover:bg-red-50 text-red-600 border border-red-200 rounded-md transition-colors">
+                Delete
+              </button>
+            </div>
           </td>
         </tr>
       \`).join('');
     }
-    
+
     async function redeploy(id) {
-      await fetch(\`/api/deployments/\${id}/redeploy\`, { method: 'POST' });
+      const res = await fetch(\`/api/deployments/\${id}/redeploy\`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || 'Redeploy failed');
+      }
       loadDeployments();
     }
-    
+
     async function deleteDeployment(id) {
       if (!confirm('Delete this deployment?')) return;
       await fetch('/api/deployments', {
@@ -567,7 +629,48 @@ async function handleRequest(req: Request): Promise<Response> {
       });
       loadDeployments();
     }
-    
+
+    let releaseDebounceTimer = null;
+    function debouncedFetchReleases(repo) {
+      clearTimeout(releaseDebounceTimer);
+      const select = document.getElementById('releaseSelect');
+      const status = document.getElementById('releaseStatus');
+      if (!repo || !repo.includes('/')) {
+        select.innerHTML = '<option value="">— enter a valid repo (owner/repo) —</option>';
+        select.disabled = true;
+        status.textContent = '';
+        return;
+      }
+      status.textContent = 'Fetching releases...';
+      releaseDebounceTimer = setTimeout(async () => {
+        try {
+          const res = await fetch('/api/releases?repo=' + encodeURIComponent(repo));
+          if (!res.ok) {
+            const err = await res.json();
+            status.textContent = err.error || 'Failed to load releases';
+            select.innerHTML = '<option value="">— error loading releases —</option>';
+            select.disabled = true;
+            return;
+          }
+          const releases = await res.json();
+          if (!releases.length) {
+            status.textContent = 'No releases found for this repo';
+            select.innerHTML = '<option value="">— no releases —</option>';
+            select.disabled = true;
+            return;
+          }
+          select.innerHTML = releases
+            .map(r => '<option value="' + r.tag_name + '">' + (r.name || r.tag_name) + ' (' + r.tag_name + ')</option>')
+            .join('');
+          select.disabled = false;
+          status.textContent = releases.length + ' release' + (releases.length === 1 ? '' : 's') + ' available';
+        } catch (e) {
+          status.textContent = 'Network error fetching releases';
+          select.disabled = true;
+        }
+      }, 500);
+    }
+
     document.getElementById('deployForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const form = e.target;
@@ -576,25 +679,28 @@ async function handleRequest(req: Request): Promise<Response> {
         projectId: form.projectId.value,
         serviceId: form.serviceId.value,
         environmentId: form.environmentId.value,
-        branch: form.branch.value,
-        repo: form.repo.value
+        releaseTag: form.releaseTag.value,
+        repo: form.repo.value,
       };
-      
+
       const res = await fetch('/api/deployments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(data),
       });
-      
+
       if (res.ok) {
         form.reset();
+        document.getElementById('releaseSelect').innerHTML = '<option value="">— enter a repo first —</option>';
+        document.getElementById('releaseSelect').disabled = true;
+        document.getElementById('releaseStatus').textContent = '';
         loadDeployments();
       } else {
         const err = await res.json();
         alert(err.error || 'Deployment failed');
       }
     });
-    
+
     loadUser().then(() => loadDeployments());
   </script>
 </body>
@@ -604,6 +710,8 @@ async function handleRequest(req: Request): Promise<Response> {
     headers: { 'Content-Type': 'text/html' },
   });
 }
+
+await runMigrations();
 
 const server = Bun.serve({
   port: PORT,

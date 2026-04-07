@@ -172,15 +172,16 @@ export interface DeploymentConfig {
   projectId: string;
   serviceId: string;
   environmentId?: string;
-  branch?: string;
+  releaseTag?: string;
   repo?: string;
 }
 
 export async function deployToRailway(token: string, config: DeploymentConfig): Promise<string> {
   const client = new RailwayClient(token);
 
-  if (config.branch && config.repo) {
-    await client.connectService(config.serviceId, config.repo, config.branch);
+  if (config.releaseTag && config.repo) {
+    // Railway's serviceConnect accepts tag names as the branch parameter
+    await client.connectService(config.serviceId, config.repo, config.releaseTag);
   }
 
   const environmentId = config.environmentId || 'production';
