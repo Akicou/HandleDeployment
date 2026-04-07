@@ -1,4 +1,4 @@
-const RAILWAY_GRAPHQL_ENDPOINT = 'https://backboard.railway.com/graphql/v2';
+const RAILWAY_GRAPHQL_ENDPOINT = 'https://backboard.railway.app/graphql/v2';
 
 interface RailwayResponse<T> {
   data?: T;
@@ -16,6 +16,37 @@ interface ServiceRecord {
 export interface ProjectServiceRecord {
   id: string;
   name: string;
+}
+
+export interface ProjectEnvironmentRecord {
+  id: string;
+  name: string;
+}
+
+export interface ProjectContextRecord {
+  id: string;
+  baseEnvironmentId: string | null;
+  services: ProjectServiceRecord[];
+  environments: ProjectEnvironmentRecord[];
+}
+
+export interface ServiceInstanceRecord {
+  id: string;
+  serviceId: string;
+  serviceName: string;
+  startCommand: string | null;
+  buildCommand: string | null;
+  rootDirectory: string | null;
+  healthcheckPath: string | null;
+  region: string | null;
+  numReplicas: number | null;
+  restartPolicyType: string | null;
+  restartPolicyMaxRetries: number | null;
+  latestDeployment: {
+    id: string;
+    status: string;
+    createdAt: string;
+  } | null;
 }
 
 export interface DeploymentConfig {
@@ -119,10 +150,108 @@ export class RailwayClient {
     if (!result.project) {
       throw new Error(`Project ${projectId} not found`);
     }
+
     return result.project.services.edges.map((edge) => edge.node);
   }
 
-  async getServiceInstance(serviceId: string, environmentId: string): Promise<unknown> {
+  async getProjectContext(projectId: string): Promise<ProjectContextRecord> {
+    const query = `
+      query project($id: String!) {
+        project(id: $id) {
+          id
+          baseEnvironmentId
+          environments(first: 100) {
+            edges {
+              node {
+                id
+                name
+              }
+            }
+          }
+        }
+      }
+    `;
+    const result = await this.query<{
+      project: {
+        id: string;
+        baseEnvironmentId: string | null;
+        environments: {
+          edges: Array<{ node: ProjectEnvironmentRecord }>;
+        };
+      } | null;
+    }>(query, { id: projectId });
+    if (!result.project) {
+      throw new Error(`Project ${projectId} not found`);
+    }
+
+    let services: ProjectServiceRecord[] = [];
+    try {
+      services = await this.getProjectServices(projectId);
+    } catch (error) {
+      if (!result.project.baseEnvironmentId) {
+        throw error;
+      }
+
+      const instances = await this.getEnvironmentServiceInstances(result.project.baseEnvironmentId);
+      services = instances.map((instance) => ({
+        id: instance.serviceId,
+        name: instance.serviceName,
+      }));
+    }
+
+    return {
+      id: result.project.id,
+      baseEnvironmentId: result.project.baseEnvironmentId,
+      services,
+      environments: result.project.environments.edges.map((edge) => edge.node),
+    };
+  }
+
+  async getEnvironmentServiceInstances(environmentId: string): Promise<ServiceInstanceRecord[]> {
+    const query = `
+      query environment($id: String!) {
+        environment(id: $id) {
+          serviceInstances {
+            edges {
+              node {
+                id
+                serviceId
+                serviceName
+                startCommand
+                buildCommand
+                rootDirectory
+                healthcheckPath
+                region
+                numReplicas
+                restartPolicyType
+                restartPolicyMaxRetries
+                latestDeployment {
+                  id
+                  status
+                  createdAt
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+    const result = await this.query<{
+      environment: {
+        serviceInstances: {
+          edges: Array<{ node: ServiceInstanceRecord }>;
+        };
+      } | null;
+    }>(query, { id: environmentId });
+
+    if (!result.environment) {
+      throw new Error(`Environment ${environmentId} not found`);
+    }
+
+    return result.environment.serviceInstances.edges.map((edge) => edge.node);
+  }
+
+  async getServiceInstance(serviceId: string, environmentId: string): Promise<ServiceInstanceRecord | null> {
     const query = `
       query serviceInstance($serviceId: String!, $environmentId: String!) {
         serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
@@ -140,8 +269,26 @@ export class RailwayClient {
         }
       }
     `;
-    const result = await this.query<{ serviceInstance: unknown }>(query, { serviceId, environmentId });
+    const result = await this.query<{ serviceInstance: ServiceInstanceRecord | null }>(query, { serviceId, environmentId });
     return result.serviceInstance;
+  }
+
+  async updateServiceInstance(
+    serviceId: string,
+    environmentId: string,
+    input: { rootDirectory?: string }
+  ): Promise<boolean> {
+    const query = `
+      mutation serviceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) {
+        serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
+      }
+    `;
+    const result = await this.query<{ serviceInstanceUpdate: boolean }>(query, {
+      serviceId,
+      environmentId,
+      input,
+    });
+    return result.serviceInstanceUpdate;
   }
 
   async connectService(serviceId: string, repo: string, branch: string): Promise<string> {
@@ -288,4 +435,14 @@ export async function changeBranch(token: string, serviceId: string, repo: strin
 export async function addCustomDomain(token: string, serviceId: string, domain: string): Promise<void> {
   const client = new RailwayClient(token);
   await client.addCustomDomain(serviceId, domain);
+}
+
+export async function updateRootDirectory(
+  token: string,
+  serviceId: string,
+  environmentId: string,
+  rootDirectory: string
+): Promise<void> {
+  const client = new RailwayClient(token);
+  await client.updateServiceInstance(serviceId, environmentId, { rootDirectory });
 }

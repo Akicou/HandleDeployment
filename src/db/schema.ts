@@ -27,6 +27,7 @@ export const deployments = pgTable('deployments', {
   autoDeploy: boolean('auto_deploy').default(false),
   deploymentId: varchar('deployment_id', { length: 255 }),
   customDomain: varchar('custom_domain', { length: 255 }),
+  rootDirectory: varchar('root_directory', { length: 512 }).default('/'),
   trackedReleaseTag: varchar('tracked_release_tag', { length: 255 }),
   lastObservedReleaseTag: varchar('last_observed_release_tag', { length: 255 }),
   lastDeployedAt: timestamp('last_deployed_at'),

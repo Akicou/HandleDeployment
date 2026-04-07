@@ -34,6 +34,7 @@ export async function runMigrations(): Promise<void> {
       auto_deploy BOOLEAN DEFAULT false,
       deployment_id VARCHAR(255),
       custom_domain VARCHAR(255),
+      root_directory VARCHAR(512) DEFAULT '/',
       tracked_release_tag VARCHAR(255),
       last_observed_release_tag VARCHAR(255),
       last_deployed_at TIMESTAMP,
@@ -68,6 +69,10 @@ export async function runMigrations(): Promise<void> {
 
   await db.execute(sql`
     ALTER TABLE deployments ADD COLUMN IF NOT EXISTS custom_domain VARCHAR(255);
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE deployments ADD COLUMN IF NOT EXISTS root_directory VARCHAR(512) DEFAULT '/';
   `);
 
   await db.execute(sql`

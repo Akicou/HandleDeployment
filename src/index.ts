@@ -1,5 +1,12 @@
 import { db, schema } from './db';
-import { addCustomDomain, changeBranch, deployToRailway, RailwayClient, redeployToRailway } from './api/railway';
+import {
+  addCustomDomain,
+  changeBranch,
+  deployToRailway,
+  RailwayClient,
+  redeployToRailway,
+  updateRootDirectory,
+} from './api/railway';
 import {
   exchangeCodeForToken,
   findOrCreateUser,
@@ -17,6 +24,7 @@ import { runMigrations } from './db/migrate';
 import { eq } from 'drizzle-orm';
 import type { Deployment, User } from './db/schema';
 import type { GitHubRelease, GitHubRepo } from './auth/github';
+import type { ProjectContextRecord } from './api/railway';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const RELEASE_WATCH_INTERVAL_MS = 5 * 60 * 1000;
@@ -35,6 +43,7 @@ interface CreateDeploymentBody {
   releaseTag?: string;
   repo?: string;
   autoDeploy?: boolean;
+  rootDirectory?: string;
 }
 
 interface DeleteDeploymentBody {
@@ -65,6 +74,11 @@ interface ReleaseResolution {
   stableReleases: GitHubRelease[];
   latestStableRelease: GitHubRelease;
   selectedRelease: GitHubRelease;
+}
+
+interface ResolvedEnvironment {
+  environmentId: string;
+  environmentName: string | null;
 }
 
 type PublicUser = Omit<User, 'githubAccessToken'>;
@@ -117,6 +131,17 @@ function decorateRailwayAuthError(message: string): string {
   return message;
 }
 
+function normalizeRootDirectory(rootDirectory?: string | null): string {
+  const normalized = rootDirectory?.trim() || '/';
+  if (normalized === '.' || normalized === './') {
+    return '/';
+  }
+  if (normalized === '/') {
+    return '/';
+  }
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
+}
+
 function toPublicUser(user: User): PublicUser {
   const { githubAccessToken: _token, ...publicUser } = user;
   return publicUser;
@@ -153,19 +178,24 @@ async function getRailwayTokenForUser(userId: string, projectId?: string): Promi
 }
 
 async function getProjectServicesForUser(userId: string, projectId: string): Promise<Array<{ id: string; name: string }>> {
+  const projectContext = await getProjectContextForUser(userId, projectId);
+  return projectContext.services;
+}
+
+async function getProjectContextForUser(userId: string, projectId: string): Promise<ProjectContextRecord> {
   const railwayToken = await getRailwayTokenForUser(userId, projectId);
   if (!railwayToken) {
     throw new Error('No Railway token configured for this project');
   }
 
   const client = new RailwayClient(railwayToken);
-  return client.getProjectServices(projectId);
+  return client.getProjectContext(projectId);
 }
 
 async function validateRailwayTokenForProject(token: string, projectId: string): Promise<{ ok: boolean; error?: string }> {
   try {
     const client = new RailwayClient(token);
-    await client.getProjectServices(projectId);
+    await client.getProjectContext(projectId);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: decorateRailwayAuthError(errorMessage(error)) };
@@ -193,6 +223,62 @@ async function resolveServiceIdForProject(
     serviceId: matchingService.id,
     serviceName: matchingService.name,
   };
+}
+
+async function resolveEnvironmentIdForProject(
+  userId: string,
+  projectId: string,
+  environmentIdentifier?: string | null
+): Promise<ResolvedEnvironment> {
+  const projectContext = await getProjectContextForUser(userId, projectId);
+  const normalizedInput = environmentIdentifier?.trim().toLowerCase();
+
+  if (!normalizedInput) {
+    const defaultEnvironment = projectContext.environments.find(
+      (candidate) => candidate.id === projectContext.baseEnvironmentId
+    ) || projectContext.environments[0];
+
+    if (defaultEnvironment) {
+      return {
+        environmentId: defaultEnvironment.id,
+        environmentName: defaultEnvironment.name,
+      };
+    }
+
+    if (projectContext.baseEnvironmentId) {
+      return {
+        environmentId: projectContext.baseEnvironmentId,
+        environmentName: null,
+      };
+    }
+
+    throw new Error(`No environments were found for project ${projectId}.`);
+  }
+
+  const matchingEnvironment = projectContext.environments.find((candidate) =>
+    candidate.id.toLowerCase() === normalizedInput || candidate.name.toLowerCase() === normalizedInput
+  );
+
+  if (matchingEnvironment) {
+    return {
+      environmentId: matchingEnvironment.id,
+      environmentName: matchingEnvironment.name,
+    };
+  }
+
+  if (projectContext.baseEnvironmentId && normalizedInput === 'production') {
+    const defaultEnvironment = projectContext.environments.find(
+      (candidate) => candidate.id === projectContext.baseEnvironmentId
+    );
+    return {
+      environmentId: projectContext.baseEnvironmentId,
+      environmentName: defaultEnvironment?.name || null,
+    };
+  }
+
+  throw new Error(
+    `Environment "${environmentIdentifier}" was not found in project ${projectId}. Choose one from the environment list.`
+  );
 }
 
 async function resolveReleaseSelection(
@@ -245,6 +331,30 @@ async function ensureDeploymentDefaultBranch(
     releaseResolution.repo.default_branch
   );
   return releaseResolution;
+}
+
+async function syncDeploymentRootDirectory(
+  deployment: Pick<Deployment, 'railwayToken' | 'serviceId' | 'environmentId' | 'rootDirectory'>
+): Promise<void> {
+  if (!deployment.railwayToken || !deployment.environmentId) {
+    return;
+  }
+
+  const desiredRootDirectory = normalizeRootDirectory(deployment.rootDirectory);
+  const client = new RailwayClient(deployment.railwayToken);
+  const currentInstance = await client.getServiceInstance(deployment.serviceId, deployment.environmentId);
+  const currentRootDirectory = normalizeRootDirectory(currentInstance?.rootDirectory);
+
+  if (currentRootDirectory === desiredRootDirectory) {
+    return;
+  }
+
+  await updateRootDirectory(
+    deployment.railwayToken,
+    deployment.serviceId,
+    deployment.environmentId,
+    desiredRootDirectory
+  );
 }
 
 async function refreshReleaseMetadataWithoutDeploy(deployment: Deployment): Promise<void> {
@@ -300,6 +410,23 @@ async function runReleaseWatcher(): Promise<void> {
         const releaseResolution = await resolveReleaseSelection(owner.githubAccessToken, deployment.repo);
         const currentTrackedTag = deployment.trackedReleaseTag || deployment.releaseTag || null;
         const latestTag = releaseResolution.latestStableRelease.tag_name;
+        const resolvedEnvironment = await resolveEnvironmentIdForProject(
+          deployment.userId,
+          deployment.projectId,
+          deployment.environmentId
+        );
+        const effectiveEnvironmentId = resolvedEnvironment.environmentId;
+
+        if (deployment.environmentId !== effectiveEnvironmentId) {
+          await db
+            .update(schema.deployments)
+            .set({
+              environmentId: effectiveEnvironmentId,
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.deployments.id, deployment.id));
+          deployment.environmentId = effectiveEnvironmentId;
+        }
 
         if (!currentTrackedTag) {
           await db
@@ -342,10 +469,17 @@ async function runReleaseWatcher(): Promise<void> {
           releaseResolution.repo.default_branch
         );
 
+        await syncDeploymentRootDirectory({
+          railwayToken: deployment.railwayToken,
+          serviceId: deployment.serviceId,
+          environmentId: effectiveEnvironmentId,
+          rootDirectory: deployment.rootDirectory,
+        });
+
         const deploymentId = await redeployToRailway(
           deployment.railwayToken,
           deployment.serviceId,
-          deployment.environmentId || undefined
+          effectiveEnvironmentId
         );
 
         await db
@@ -538,7 +672,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     const body = await req.json() as CreateDeploymentBody;
-    const { name, projectId, serviceId, environmentId, releaseTag, repo, autoDeploy } = body;
+    const { name, projectId, serviceId, environmentId, releaseTag, repo, autoDeploy, rootDirectory } = body;
 
     if (!name || !projectId || !serviceId || !repo) {
       return jsonResponse(
@@ -561,6 +695,17 @@ async function handleRequest(req: Request): Promise<Response> {
       return jsonResponse({ error: message }, { status });
     }
 
+    let resolvedEnvironment: ResolvedEnvironment;
+    try {
+      resolvedEnvironment = await resolveEnvironmentIdForProject(sessionUser.id, projectId, environmentId);
+    } catch (error) {
+      const message = decorateRailwayAuthError(errorMessage(error));
+      const status = message.includes('Not Authorized') ? 502 : 400;
+      return jsonResponse({ error: message }, { status });
+    }
+
+    const normalizedRootDirectory = normalizeRootDirectory(rootDirectory);
+
     let releaseResolution: ReleaseResolution;
     try {
       releaseResolution = await resolveReleaseSelection(session.githubToken, repo, releaseTag);
@@ -577,23 +722,31 @@ async function handleRequest(req: Request): Promise<Response> {
         name,
         projectId,
         serviceId: resolvedService.serviceId,
-        environmentId: environmentId || 'production',
+        environmentId: resolvedEnvironment.environmentId,
         releaseTag: releaseResolution.selectedRelease.tag_name,
         repo,
         railwayToken,
         status: 'deploying',
         autoDeploy: Boolean(autoDeploy),
+        rootDirectory: normalizedRootDirectory,
         trackedReleaseTag: releaseResolution.selectedRelease.tag_name,
         lastObservedReleaseTag: releaseResolution.latestStableRelease.tag_name,
       })
       .returning();
 
     try {
+      await syncDeploymentRootDirectory({
+        railwayToken,
+        serviceId: resolvedService.serviceId,
+        environmentId: resolvedEnvironment.environmentId,
+        rootDirectory: normalizedRootDirectory,
+      });
+
       const deploymentId = await deployToRailway(railwayToken, {
         name,
         projectId,
         serviceId: resolvedService.serviceId,
-        environmentId,
+        environmentId: resolvedEnvironment.environmentId,
         repo,
         branch: releaseResolution.repo.default_branch,
       });
@@ -646,15 +799,40 @@ async function handleRequest(req: Request): Promise<Response> {
     let releaseResolution: ReleaseResolution | null = null;
 
     try {
+      const resolvedEnvironment = await resolveEnvironmentIdForProject(
+        deployment.userId,
+        deployment.projectId,
+        deployment.environmentId
+      );
+      const effectiveEnvironmentId = resolvedEnvironment.environmentId;
+
+      if (deployment.environmentId !== effectiveEnvironmentId) {
+        await db
+          .update(schema.deployments)
+          .set({
+            environmentId: effectiveEnvironmentId,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.deployments.id, deploymentId));
+        deployment.environmentId = effectiveEnvironmentId;
+      }
+
       const owner = await getUserById(deployment.userId);
       if (owner?.githubAccessToken) {
         releaseResolution = await ensureDeploymentDefaultBranch(deployment, owner.githubAccessToken);
       }
 
+      await syncDeploymentRootDirectory({
+        railwayToken: deployment.railwayToken,
+        serviceId: deployment.serviceId,
+        environmentId: effectiveEnvironmentId,
+        rootDirectory: deployment.rootDirectory,
+      });
+
       const newDeploymentId = await redeployToRailway(
         deployment.railwayToken,
         deployment.serviceId,
-        deployment.environmentId || undefined
+        effectiveEnvironmentId
       );
 
       const trackedTag = releaseResolution?.latestStableRelease.tag_name
@@ -747,11 +925,16 @@ async function handleRequest(req: Request): Promise<Response> {
       return jsonResponse({ error: 'Missing token' }, { status: 400 });
     }
 
-    if (projectId) {
-      const validation = await validateRailwayTokenForProject(token, projectId);
-      if (!validation.ok) {
-        return jsonResponse({ error: validation.error || 'Token validation failed' }, { status: 400 });
-      }
+    if (!projectId) {
+      return jsonResponse(
+        { error: 'Project ID is required so the token can be validated before saving.' },
+        { status: 400 }
+      );
+    }
+
+    const validation = await validateRailwayTokenForProject(token, projectId);
+    if (!validation.ok) {
+      return jsonResponse({ error: validation.error || 'Token validation failed' }, { status: 400 });
     }
 
     if (isDefault) {
@@ -808,7 +991,7 @@ async function handleRequest(req: Request): Promise<Response> {
       .where(eq(schema.railwayTokens.userId, session.userId));
 
     const maskedTokens = await Promise.all(tokens.map(async (tokenRecord) => {
-      let status = 'unknown';
+      let status = 'needs_project';
       let validationError: string | undefined;
 
       if (tokenRecord.projectId) {
@@ -906,6 +1089,34 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  if (path === '/api/project-context' && method === 'GET') {
+    if (!session || !sessionUser) {
+      return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (!isUserAuthorized(sessionUser)) {
+      return jsonResponse({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    const projectId = url.searchParams.get('projectId');
+    if (!projectId) {
+      return jsonResponse({ error: 'Missing projectId parameter' }, { status: 400 });
+    }
+
+    try {
+      const projectContext = await getProjectContextForUser(sessionUser.id, projectId);
+      return jsonResponse({
+        services: projectContext.services,
+        environments: projectContext.environments,
+        defaultEnvironmentId: projectContext.baseEnvironmentId,
+      });
+    } catch (error) {
+      const message = decorateRailwayAuthError(errorMessage(error));
+      const status = message.includes('Not Authorized') ? 502 : 400;
+      return jsonResponse({ error: message }, { status });
+    }
+  }
+
   if (path === '/api/project-services' && method === 'GET') {
     if (!session || !sessionUser) {
       return jsonResponse({ error: 'Unauthorized' }, { status: 401 });
@@ -921,8 +1132,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     try {
-      const services = await getProjectServicesForUser(sessionUser.id, projectId);
-      return jsonResponse(services);
+      return jsonResponse(await getProjectServicesForUser(sessionUser.id, projectId));
     } catch (error) {
       const message = decorateRailwayAuthError(errorMessage(error));
       const status = message.includes('Not Authorized') ? 502 : 400;
@@ -1576,7 +1786,13 @@ async function handleRequest(req: Request): Promise<Response> {
           </div>
           <div class="form-group">
             <label>environment</label>
-            <input type="text" name="environmentId" placeholder="production">
+            <select id="environmentSelect" name="environmentId" disabled>
+              <option value="">-- enter project id first --</option>
+            </select>
+          </div>
+          <div class="form-group full">
+            <label>root folder path</label>
+            <input type="text" name="rootDirectory" value="/" placeholder="/">
           </div>
           <div class="form-group full">
             <label>repository <span>*</span></label>
@@ -1639,8 +1855,8 @@ async function handleRequest(req: Request): Promise<Response> {
             <input type="password" name="token" required placeholder="rail_xxx">
           </div>
           <div class="form-group">
-            <label>project id</label>
-            <input type="text" name="projectId" placeholder="proj_xxx">
+            <label>project id <span>*</span></label>
+            <input type="text" name="projectId" required placeholder="project id this token should access">
           </div>
           <div class="form-group full" style="margin-top:8px;">
             <button type="submit" class="btn-primary">save</button>
@@ -1694,10 +1910,11 @@ async function handleRequest(req: Request): Promise<Response> {
           ? ' | latest ' + d.lastObservedReleaseTag
           : '';
         const autoState = d.autoDeploy ? ' | auto' : '';
+        const rootState = ' | root ' + (d.rootDirectory || '/');
         return {
           ...d,
           repo: d.repo || '--',
-          releaseTag: 'tracked ' + trackedRelease + latestRelease + autoState,
+          releaseTag: 'tracked ' + trackedRelease + latestRelease + autoState + rootState,
         };
       });
       const list = document.getElementById('deployList');
@@ -1735,7 +1952,12 @@ async function handleRequest(req: Request): Promise<Response> {
 
     function setProjectOptions(tokens) {
       const projectOptions = document.getElementById('projectOptions');
-      savedProjectIds = [...new Set(tokens.map(token => token.projectId).filter(Boolean))];
+      savedProjectIds = [...new Set(
+        tokens
+          .filter(token => token.status === 'ok')
+          .map(token => token.projectId)
+          .filter(Boolean)
+      )];
       projectOptions.innerHTML = savedProjectIds
         .map(projectId => \`<option value="\${projectId}"></option>\`)
         .join('');
@@ -1743,6 +1965,7 @@ async function handleRequest(req: Request): Promise<Response> {
       const projectInput = document.getElementById('projectInput');
       if (!projectInput.value && savedProjectIds.length === 1) {
         projectInput.value = savedProjectIds[0];
+        fetchProjectContext(projectInput.value, { silent: true });
       }
     }
 
@@ -1761,28 +1984,49 @@ async function handleRequest(req: Request): Promise<Response> {
       serviceSelect.value = services[0].id;
     }
 
-    async function fetchProjectServices(projectId, options = {}) {
-      const { silent = false } = options;
-      const serviceSelect = document.getElementById('serviceSelect');
-      if (!projectId) {
-        serviceSelect.innerHTML = '<option value="">-- enter project id first --</option>';
-        serviceSelect.disabled = true;
+    function setEnvironmentOptions(environments, defaultEnvironmentId) {
+      const environmentSelect = document.getElementById('environmentSelect');
+      if (!environments.length) {
+        environmentSelect.innerHTML = '<option value="">-- no environments found --</option>';
+        environmentSelect.disabled = true;
         return;
       }
 
-      const res = await fetch('/api/project-services?projectId=' + encodeURIComponent(projectId));
+      environmentSelect.innerHTML = environments.map(environment =>
+        \`<option value="\${environment.id}">\${environment.name} (\${environment.id})</option>\`
+      ).join('');
+      environmentSelect.disabled = false;
+      environmentSelect.value = defaultEnvironmentId || environments[0].id;
+    }
+
+    async function fetchProjectContext(projectId, options = {}) {
+      const { silent = false } = options;
+      const serviceSelect = document.getElementById('serviceSelect');
+      const environmentSelect = document.getElementById('environmentSelect');
+      if (!projectId) {
+        serviceSelect.innerHTML = '<option value="">-- enter project id first --</option>';
+        serviceSelect.disabled = true;
+        environmentSelect.innerHTML = '<option value="">-- enter project id first --</option>';
+        environmentSelect.disabled = true;
+        return;
+      }
+
+      const res = await fetch('/api/project-context?projectId=' + encodeURIComponent(projectId));
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: 'failed to load services' }));
         serviceSelect.innerHTML = \`<option value="">-- \${data.error || 'unable to load services'} --</option>\`;
         serviceSelect.disabled = true;
+        environmentSelect.innerHTML = '<option value="">-- unable to load environments --</option>';
+        environmentSelect.disabled = true;
         if (!silent) {
           showToast(data.error || 'failed to load services', true);
         }
         return;
       }
 
-      const services = await res.json();
-      setServiceOptions(services);
+      const projectContext = await res.json();
+      setServiceOptions(projectContext.services || []);
+      setEnvironmentOptions(projectContext.environments || [], projectContext.defaultEnvironmentId);
     }
 
     function setupProjectSelector() {
@@ -1791,13 +2035,13 @@ async function handleRequest(req: Request): Promise<Response> {
         clearTimeout(projectServicesTimer);
         const projectId = e.target.value.trim();
         projectServicesTimer = setTimeout(() => {
-          fetchProjectServices(projectId, { silent: true });
+          fetchProjectContext(projectId, { silent: true });
         }, 300);
       });
 
       const initialProjectId = projectInput.value.trim();
       if (initialProjectId) {
-        fetchProjectServices(initialProjectId, { silent: true });
+        fetchProjectContext(initialProjectId, { silent: true });
       }
     }
 
@@ -1926,9 +2170,9 @@ async function handleRequest(req: Request): Promise<Response> {
         <div class="token-item">
           <span class="token-mask">\${t.token}</span>
           <button class="btn-danger" onclick="deleteToken('\${t.id}')">delete</button>
-          <span style="color:var(--text-muted);font-size:10px;">\${t.projectId || '—'}\${t.isDefault ? ' • default' : ''}\${t.status === 'ok' ? ' • verified' : t.status === 'error' ? ' • invalid' : ''}</span>
+          <span style="color:var(--text-muted);font-size:10px;">\${t.projectId || '—'}\${t.isDefault ? ' • default' : ''}\${t.status === 'ok' ? ' • verified' : t.status === 'error' ? ' • invalid' : ' • needs project'}</span>
         </div>
-        \${t.validationError ? '<div style="color:var(--danger);font-size:10px;margin:-2px 0 8px 0;">' + t.validationError + '</div>' : ''}
+        \${t.validationError ? '<div style="color:var(--danger);font-size:10px;margin:-2px 0 8px 0;">' + t.validationError + '</div>' : t.status === 'needs_project' ? '<div style="color:var(--warning);font-size:10px;margin:-2px 0 8px 0;">save this token again with a project id to validate it</div>' : ''}
       \`).join('');
     }
 
@@ -2000,7 +2244,8 @@ async function handleRequest(req: Request): Promise<Response> {
         environmentId: f.environmentId.value,
         releaseTag: f.releaseTag.value || undefined,
         repo: f.repo.value,
-        autoDeploy: f.autoDeploy.checked
+        autoDeploy: f.autoDeploy.checked,
+        rootDirectory: f.rootDirectory.value || '/'
       };
       const res = await fetch('/api/deployments', {
         method: 'POST',
@@ -2012,6 +2257,8 @@ async function handleRequest(req: Request): Promise<Response> {
         f.reset();
         document.getElementById('serviceSelect').innerHTML = '<option value="">-- enter project id first --</option>';
         document.getElementById('serviceSelect').disabled = true;
+        document.getElementById('environmentSelect').innerHTML = '<option value="">-- enter project id first --</option>';
+        document.getElementById('environmentSelect').disabled = true;
         document.getElementById('releaseSelect').disabled = true;
         loadDeployments();
       }
@@ -2031,7 +2278,10 @@ async function handleRequest(req: Request): Promise<Response> {
         f.reset();
         loadTokens();
         const currentProjectId = document.getElementById('projectInput').value.trim();
-        if (currentProjectId) fetchProjectServices(currentProjectId, { silent: true });
+        if (currentProjectId) fetchProjectContext(currentProjectId, { silent: true });
+      } else {
+        const data = await res.json().catch(() => ({ error: 'failed to save token' }));
+        showToast(data.error || 'failed to save token', true);
       }
     });
 
