@@ -405,16 +405,21 @@ export class RailwayClient {
     return result.variableDelete;
   }
 
-  async addCustomDomain(serviceId: string, domain: string): Promise<string> {
+  async addCustomDomain(input: {
+    domain: string;
+    environmentId: string;
+    projectId: string;
+    serviceId: string;
+  }): Promise<string> {
     const query = `
-      mutation serviceInstanceAddDomain($serviceId: String!, $domain: String!) {
-        serviceInstanceAddDomain(serviceId: $serviceId, domain: $domain) {
+      mutation customDomainCreate($input: CustomDomainCreateInput!) {
+        customDomainCreate(input: $input) {
           id
         }
       }
     `;
-    const result = await this.query<{ serviceInstanceAddDomain: { id: string } }>(query, { serviceId, domain });
-    return result.serviceInstanceAddDomain.id;
+    const result = await this.query<{ customDomainCreate: { id: string } }>(query, { input });
+    return result.customDomainCreate.id;
   }
 }
 
@@ -460,9 +465,17 @@ export async function changeBranch(token: string, serviceId: string, repo: strin
   await client.connectService(serviceId, repo, branch);
 }
 
-export async function addCustomDomain(token: string, serviceId: string, domain: string): Promise<void> {
+export async function addCustomDomain(
+  token: string,
+  input: {
+    domain: string;
+    environmentId: string;
+    projectId: string;
+    serviceId: string;
+  }
+): Promise<void> {
   const client = new RailwayClient(token);
-  await client.addCustomDomain(serviceId, domain);
+  await client.addCustomDomain(input);
 }
 
 export async function updateRootDirectory(

@@ -1264,7 +1264,18 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     try {
-      await addCustomDomain(deployment.railwayToken, deployment.serviceId, body.domain);
+      const resolvedEnvironment = await resolveEnvironmentIdForProject(
+        deployment.userId,
+        deployment.projectId,
+        deployment.environmentId
+      );
+
+      await addCustomDomain(deployment.railwayToken, {
+        domain: body.domain,
+        environmentId: resolvedEnvironment.environmentId,
+        projectId: deployment.projectId,
+        serviceId: deployment.serviceId,
+      });
 
       await db
         .update(schema.deployments)
